@@ -4,8 +4,10 @@ import random
 import re
 import sys
 import time
+import webbrowser
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Linews</t
+
 
 # Global flag controlled by UI/CLI to filter posts by Sri Lankan phone numbers
 SL_FILTER_ENABLED = False
@@ -471,6 +473,7 @@ def main():
         cookies_path = Path(cookies_path_str)
         if not cookies_path.is_file():
             print(f"Cookies file not found: {cookies_path}")
+            input("Press Enter to exit...")
             return
         cookies = load_netscape_cookies(cookies_path)
         print(f"[INFO] Loaded {len(cookies)} cookies from {cookies_path}")
@@ -487,6 +490,7 @@ def main():
 
     if not collected:
         print("[INFO] No posts collected, nothing to save.")
+        input("Press Enter to exit...")
         return
 
     download_images_for_posts(collected, cookies=cookies or None)
@@ -494,6 +498,13 @@ def main():
     save_posts_to_csv(collected, out_path)
     print(f"[INFO] Saved results to {out_path.resolve()}")
     print("[INFO] Images (if any) are in the fb_images/ folder.")
+    # For users who run the script by double-clicking the .py file on Windows,
+    # keep the console window open so they can read the messages.
+    try:
+        input("Scrape finished. Press Enter to close this window...")
+    except EOFError:
+        # In environments without a real stdin (e.g., some schedulers), ignore.
+        pass
 
 
 # ------------------ Advanced Tkinter GUI wrapper ------------------ #
@@ -513,7 +524,8 @@ class AdvancedSeleniumScraperApp(tk.Tk):
     - Checkbox: Only posts with Sri Lankan phone number
     - Buttons: Start Scrape, Open Output Folder, Reload Results, Close
     - Results table with columns: Post URL, Post Text, Image Paths
-    - Status line at the top of the main area
+    - Status line and progress bar at the top of the main area
+    - Double-click a row to open the post in your web browser
     """
 
     def __init__(self):
@@ -532,6 +544,17 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         self.data: List[Dict[str, str]] = []
 
         self._build_ui()
+
+        # Improve default look-and-feel where possible
+        try:
+            style = ttk.Style(self)
+            # Use a more modern theme if available
+            for candidate in ("clam", "vista", "default"):
+                if candidate in style.theme_names():
+                    style.theme_use(candidate)
+                    break
+        except Exception:
+            pass
 
     # ---------- UI construction ----------
 
@@ -595,6 +618,14 @@ class AdvancedSeleniumScraperApp(tk.Tk):
             side=tk.LEFT, anchor="w"
         )
 
+        # Progress bar to give visual feedback while scraping
+        self.progress = ttk.Progressbar(
+            status_frame,
+            mode="indeterminate",
+            length=220,
+        )
+        self.progress.pack(side=tk.RIGHT, padx=(5, 0), anchor="e")
+
         table_frame = ttk.Frame(self, padding=10)
         table_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
@@ -621,6 +652,9 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="we")
 
+        # Double-click a row to open the post URL in the default web browser
+        self.tree.bind("<Double-1>", self._on_open_selected_post)
+
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
 
@@ -635,6 +669,19 @@ class AdvancedSeleniumScraperApp(tk.Tk):
     def _set_status(self, text: str):
         self.status_var.set(text)
         self.update_idletasks()
+
+    def _start_progress(self):
+        try:
+            self.progress.start(10)
+        except Exception:
+            pass
+
+    def _stop_progress(self):
+        try:
+            self.progress.stop()
+            self.progress["value"] = 0
+        except Exception:
+            pass
 
     def _on_browse_cookies(self):
         path = filedialog.askopenfilename(
@@ -676,6 +723,7 @@ class AdvancedSeleniumScraperApp(tk.Tk):
                 return
 
         self._set_status("Running… please watch the browser window and console.")
+        self._start_progress()
         t = threading.Thread(
             target=self._run_scrape_thread,
             args=(group_input, keyword, max_posts, cookies, only_sl),
@@ -702,7 +750,13 @@ class AdvancedSeleniumScraperApp(tk.Tk):
             if not posts:
                 self.after(
                     0,
-                    lambda: self._set_status("Done. No posts matched the filters."),
+                    lambda: (
+                        self._stop_progress(),
+                        self._set_status("Done. No posts matched the filters."),
+                        messagebox.showinfo(
+                            "Scrape finished", "No posts matched the selected filters."
+                        ),
+                    ),
                 )
                 return
 
@@ -713,16 +767,29 @@ class AdvancedSeleniumScraperApp(tk.Tk):
 
             def update_ui():
                 self._populate_table()
+                self._stop_progress()
                 self._set_status(
                     f"Done. Found {len(posts)} post(s). "
                     "Data saved to fb_group_posts_selenium.csv."
                 )
+                try:
+                    messagebox.showinfo(
+                        "Scrape finished",
+                        f"Found {len(posts)} post(s).\n\n"
+                        "Results saved to fb_group_posts_selenium.csv\n"
+                        "Images (if any) are in the fb_images folder.\n\n"
+                        "You can also double-click a row to open the post in your browser.",
+                    )
+                except Exception:
+                    # Message boxes can fail in some edge cases; ignore quietly.
+                    pass
 
             self.after(0, update_ui)
         except Exception as e:
             self.after(
                 0,
                 lambda: (
+                    self._stop_progress(),
                     self._set_status("Error during scrape."),
                     messagebox.showerror("Error", str(e)),
                 ),
@@ -782,6 +849,25 @@ class AdvancedSeleniumScraperApp(tk.Tk):
                 os.system(f'xdg-open "{folder}"')
         except Exception as e:
             messagebox.showerror("Error", f"Could not open folder: {e}")
+
+    def _on_open_selected_post(self, event):
+        """
+        Double-click handler: open the selected post URL in the default browser.
+        """
+        selection = self.tree.selection()
+        if not selection:
+            return
+        item_id = selection[0]
+        values = self.tree.item(item_id, "values")
+        if not values:
+            return
+        post_url = values[0]
+        if not post_url:
+            return
+        try:
+            webbrowser.open(post_url)
+        except Exception:
+            messagebox.showerror("Error", "Could not open the post URL in browser.")
 
 
 def run_selenium_scrape(
