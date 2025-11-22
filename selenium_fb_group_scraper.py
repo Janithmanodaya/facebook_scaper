@@ -17,6 +17,14 @@ SL_FILTER_ENABLED = False
 # - 03XXXXXXXX or 07XXXXXXXX (local formats starting with 03 or 07 and 8 digits)
 SL_PHONE_REGEX = re.compile(r"(?:\+94\d{8,9}|0(?:3|7)\d{7,8})")
 
+# Facebook often embeds real image URLs inside HTML (e.g. scontent.xx.fbcdn.net)
+# and shows inline SVG icons as <img src="data:...">. We detect the real media URLs
+# via a relaxed regex so that we can download photos reliably.
+FB_IMAGE_URL_REGEX = re.compile(
+    r"https?://[^\"'\s]+?\.(?:jpg|jpeg|png|webp)",
+    re.IGNORECASE,
+)
+
 
 def contains_sl_phone(text: str) -> bool:
     if not text:
@@ -192,15 +200,35 @@ def extract_posts_from_dom(
         except Exception:
             html = ""
 
+        # If Selenium's .text is empty (common with some FB layouts), try to
+        # derive a plain-text snippet from the raw HTML so the CSV has content.
+        if not text and html:
+            # Strip tags with a simple regex-based approach
+            rough = re.sub(r"<[^>]+>", " ", html)
+            # Collapse whitespace
+            rough = " ".join(rough.split())
+            text = rough
+
         image_urls: List[str] = []
         try:
             img_elements = art.find_elements(By.XPATH, ".//img")
             for img in img_elements:
                 src = img.get_attribute("src") or ""
-                if src and src not in image_urls:
+                if not src:
+                    continue
+                if src.startswith("data:"):
+                    # Skip inline SVG/icons here; we'll look for real media URLs below.
+                    continue
+                if src not in image_urls:
                     image_urls.append(src)
         except Exception:
             pass
+
+        # As a fallback, scan the HTML for any direct image URLs (fbcdn, scontent, etc.).
+        if html:
+            for match in FB_IMAGE_URL_REGEX.findall(html):
+                if match not in image_urls:
+                    image_urls.append(match)
 
         posts.append(
             {
