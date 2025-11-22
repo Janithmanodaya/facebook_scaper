@@ -118,17 +118,17 @@ def extract_posts_from_dom(
 
     - First, find all elements with role="article" anywhere on the page.
     - For each article, try several strategies to locate a canonical post link:
-      1. A link containing "/groups/<group_id_or_slug>/posts/"
+      1. A link containing "/groups/<group_id_or_slug>/posts/" or "/permalink/"
       2. Any link containing "/groups/" and "/posts/"
       3. As a final fallback, any link containing "/posts/"
     - We then collect:
       - post_url
       - post_text (visible text of the article)
+      - html (innerHTML of the article, used as a fallback for phone detection)
       - image_urls (all <img> src values within the article)
     """
     posts: List[Dict[str, str]] = []
 
-    # 1) Try the common pattern: articles within a feed
     try:
         articles = driver.find_elements(By.XPATH, "//div[@role='article']")
     except Exception as e:
@@ -162,8 +162,7 @@ def extract_posts_from_dom(
             try:
                 link_el = art.find_element(
                     By.XPATH,
-                    ".//a[contains(@href, '/groups/') and "
-                    "contains(@href, '/posts/')]",
+                    ".//a[contains(@href, '/groups/') and contains(@href, '/posts/')]",
                 )
             except Exception:
                 link_el = None
@@ -171,15 +170,11 @@ def extract_posts_from_dom(
         # Strategy 3: any link with "/posts/"
         if link_el is None:
             try:
-                link_el = art.find_element(
-                    By.XPATH,
-                    ".//a[contains(@href, '/posts/')]",
-                )
+                link_el = art.find_element(By.XPATH, ".//a[contains(@href, '/posts/')]")
             except Exception:
                 link_el = None
 
         if link_el is None:
-            # As debug help, print a shortened text snippet so we know we saw something
             snippet = (art.text or "").replace("\n", " ")[:80]
             print(f"[DEBUG] Article #{idx}: no post link found. Snippet='{snippet}'")
             continue
@@ -189,8 +184,12 @@ def extract_posts_from_dom(
             continue
 
         text = art.text or ""
+        html = ""
+        try:
+            html = art.get_attribute("innerHTML") or ""
+        except Exception:
+            html = ""
 
-        # Collect image URLs within this article
         image_urls: List[str] = []
         try:
             img_elements = art.find_elements(By.XPATH, ".//img")
@@ -205,6 +204,7 @@ def extract_posts_from_dom(
             {
                 "post_url": href,
                 "post_text": text[:4000],
+                "html": html,
                 "image_urls": image_urls,
             }
         )
@@ -386,14 +386,14 @@ def selenium_collect_posts(
                 seen_urls.add(url)
 
                 text_lower = p["post_text"].lower()
+                html_lower = (p.get("html") or "").lower()
 
                 # Sri Lankan phone filter first (if enabled)
-                if only_sl_phones and not contains_sl_phone(text_lower):
+                if only_sl_phones and not (contains_sl_phone(text_lower) or contains_sl_phone(html_lower)):
                     continue
 
                 # Keyword filter (if provided)
-                if keyword and keyword not in text_lower:
-                    continue
+                if keyword and (keyword not in text_lower andnue
 
                 collected.append(p)
                 print(f"[DEBUG] Collected post #{len(collected)}: {url}")
