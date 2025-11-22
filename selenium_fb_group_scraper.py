@@ -114,57 +114,102 @@ def extract_posts_from_dom(
     """
     Extract posts from the live DOM using Selenium.
 
-    Strategy:
-    - Find post containers as elements with role="article" inside role="feed".
-    - Inside each article, look for a link that contains "/groups/.../posts/...".
-    - Collect:
+    We try to be robust to Facebook layout changes:
+
+    - First, find all elements with role="article" anywhere on the page.
+    - For each article, try several strategies to locate a canonical post link:
+      1. A link containing "/groups/<group_id_or_slug>/posts/"
+      2. Any link containing "/groups/" and "/posts/"
+      3. As a final fallback, any link containing "/posts/"
+    - We then collect:
       - post_url
       - post_text (visible text of the article)
       - image_urls (all <img> src values within the article)
     """
     posts: List[Dict[str, str]] = []
+
+    # 1) Try the common pattern: articles within a feed
     try:
-        articles = driver.find_elements(
-            By.XPATH, "//div[@role='feed']//div[@role='article']"
-        )
+        articles = driver.find_elements(By.XPATH, "//div[@role='article']")
     except Exception as e:
         print(f"[DEBUG] Failed to locate post containers: {e}")
         return posts
 
-    for art in articles:
-        try:
-            link_el = art.find_element(
-                By.XPATH,
-                ".//a[contains(@href, '/groups/') and contains(@href, '/posts/')]",
-            )
-            href = link_el.get_attribute("href") or ""
-            if not href:
-                continue
+    print(f"[DEBUG] Found {len(articles)} candidate article elements on the page.")
 
-            text = art.text or ""
+    gid = (group_id_or_slug or "").strip()
 
-            # Collect image URLs within this article
-            image_urls: List[str] = []
+    for idx, art in enumerate(articles, start=1):
+        href = ""
+        link_el = None
+
+        # Strategy 1: explicit group id/slug in the URL
+        if gid:
             try:
-                img_elements = art.find_elements(By.XPATH, ".//img")
-                for img in img_elements:
-                    src = img.get_attribute("src") or ""
-                    if src and src not in image_urls:
-                        image_urls.append(src)
+                xpath = (
+                    ".//a[contains(@href, '/groups/"
+                    + gid
+                    + "/posts/') or contains(@href, '/groups/"
+                    + gid
+                    + "/permalink/')]"
+                )
+                link_el = art.find_element(By.XPATH, xpath)
             except Exception:
-                pass
+                link_el = None
 
-            posts.append(
-                {
-                    "post_url": href,
-                    "post_text": text[:4000],
-                    "image_urls": image_urls,
-                }
-            )
-        except Exception:
-            # If we can't find a suitable link inside this article, skip it
+        # Strategy 2: generic groups + posts pattern
+        if link_el is None:
+            try:
+                link_el = art.find_element(
+                    By.XPATH,
+                    ".//a[contains(@href, '/groups/') and "
+                    "contains(@href, '/posts/')]",
+                )
+            except Exception:
+                link_el = None
+
+        # Strategy 3: any link with "/posts/"
+        if link_el is None:
+            try:
+                link_el = art.find_element(
+                    By.XPATH,
+                    ".//a[contains(@href, '/posts/')]",
+                )
+            except Exception:
+                link_el = None
+
+        if link_el is None:
+            # As debug help, print a shortened text snippet so we know we saw something
+            snippet = (art.text or "").replace("\n", " ")[:80]
+            print(f"[DEBUG] Article #{idx}: no post link found. Snippet='{snippet}'")
             continue
 
+        href = link_el.get_attribute("href") or ""
+        if not href:
+            continue
+
+        text = art.text or ""
+
+        # Collect image URLs within this article
+        image_urls: List[str] = []
+        try:
+            img_elements = art.find_elements(By.XPATH, ".//img")
+            for img in img_elements:
+                src = img.get_attribute("src") or ""
+                if src and src not in image_urls:
+                    image_urls.append(src)
+        except Exception:
+            pass
+
+        posts.append(
+            {
+                "post_url": href,
+                "post_text": text[:4000],
+                "image_urls": image_urls,
+            }
+        )
+
+    print(f"[DEBUG] extract_posts_from_dom: returning {len(posts)} post(s).")
     return posts
 
 
