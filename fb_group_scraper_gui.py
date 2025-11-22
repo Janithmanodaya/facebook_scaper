@@ -81,37 +81,40 @@ def scrape_group_posts(group, keyword, max_posts=100, cookies_file=None):
     count = 0
     total_seen = 0
 
-    for post in get_posts(
-        group=group,
-        pages=1000,
-        cookies=cookies_file if cookies_file else None,
-        options={"allow_extra_requests": False},
-    ):
-        total_seen += 1
-        text = (post.get("post_text") or "").strip()
-        shared_text = (post.get("shared_text") or "").strip()
+    try:
+        for post in get_posts(
+            group=group,
+            pages=50,  # practical upper bound
+            cookies=cookies_file if cookies_file else None,
+            options={"allow_extra_requests": True},
+        ):
+            total_seen += 1
+            text = (post.get("post_text") or "").strip()
+            shared_text = (post.get("shared_text") or "").strip()
 
-        full_text = (text + " " + shared_text).lower()
+            full_text = (text + " " + shared_text).lower()
 
-        if use_filter and keyword not in full_text:
-            print(f"[DEBUG] Post #{total_seen} skipped (keyword not found).")
-            continue
+            if use_filter and keyword not in full_text:
+                print(f"[DEBUG] Post #{total_seen} skipped (keyword not found).")
+                continue
 
-        record = {
-            "time": str(post.get("time") or ""),
-            "post_text": text,
-            "shared_text": shared_text,
-            "post_url": post.get("post_url") or "",
-            "shared_link": post.get("shared_link") or "",
-        }
-        result.append(record)
-        count += 1
+            record = {
+                "time": str(post.get("time") or ""),
+                "post_text": text,
+                "shared_text": shared_text,
+                "post_url": post.get("post_url") or "",
+                "shared_link": post.get("shared_link") or "",
+            }
+            result.append(record)
+            count += 1
 
-        print(f"[DEBUG] Post #{total_seen} matched. Total matches: {count}")
+            print(f"[DEBUG] Post #{total_seen} matched. Total matches: {count}")
 
-        if count >= max_posts:
-            print("[DEBUG] Reached max_posts limit, stopping scrape loop.")
-            break
+            if count >= max_posts:
+                print("[DEBUG] Reached max_posts limit, stopping scrape loop.")
+                break
+    except Exception as e:
+        print(f"[DEBUG] Exception while scraping: {e}")
 
     print(f"[DEBUG] Scrape finished. Total seen={total_seen}, total matched={count}")
     return result
