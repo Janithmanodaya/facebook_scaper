@@ -357,16 +357,28 @@ def selenium_collect_posts(
             attach_cookies(driver, cookies)
             driver.get(group_url)
             print("[INFO] Browser opened with your cookies applied.")
-            print(
-                "      If you still see a login page, log in and open the group page manually,"
-            )
-            input("      then press ENTER here to start scraping...")
         else:
             print("[INFO] No cookies provided. A browser window will open.")
-            print("      Log in to Facebook in that window, navigate to the group page,")
-            input("      then press ENTER here to start scraping...")
-            driver.get("https://www.facebook.com/")
-            # User is expected to log in and open the group page manually
+            driver.get(group_url)
+            # Facebook may redirect to login; user must log in and then open the group page.
+
+        print(
+            "[INFO] Please log in to Facebook in the opened browser (if not already), "
+            "then navigate to the group page. The scraper will start automatically once "
+            "it detects a group URL, or after a timeout."
+        )
+
+        # Wait (up to ~5 minutes) for the user to log in and open the group page.
+        max_wait_seconds = 300
+        start_wait = time.time()
+        while time.time() - start_wait < max_wait_seconds:
+            try:
+                current_url = driver.current_url
+            except Exception:
+                current_url = ""
+            if "/groups/" in (current_url or ""):
+                break
+            time.sleep(3)
 
         time.sleep(5)
 
