@@ -27,12 +27,39 @@ except ImportError:
 # ------------------ Scraping logic ------------------ #
 
 
+def _normalize_group_input(group: str) -> str:
+    """
+    facebook_scraper expects either:
+    - group ID (e.g. "123456789")
+    - group slug (e.g. "mygroupname")
+
+    If a full URL is provided, we extract the part after "/groups/" and
+    strip any query parameters or fragments.
+    """
+    group = group.strip()
+    if "facebook.com" not in group:
+        return group
+
+    # Example: https://www.facebook.com/groups/123456789?ref=share
+    #          https://www.facebook.com/groups/mygroupname/
+    parts = group.split("/groups/", 1)
+    if len(parts) == 2:
+        tail = parts[1]
+        # Remove query string or fragment
+        for sep in ("?", "#"):
+            if sep in tail:
+                tail = tail.split(sep, 1)[0]
+        return tail.strip().strip("/")
+
+    return group
+
+
 def scrape_group_posts(group, keyword, max_posts=100, cookies_file=None):
     """
     Scrape posts from a Facebook group with facebook_scraper.
 
     Parameters:
-    - group: group ID or group URL (facebook_scraper accepts both)
+    - group: group ID, slug, or full group URL
     - keyword: keyword to filter by in post_text (case-insensitive)
     - max_posts: maximum number of matched posts to return
     - cookies_file: path to cookies.txt file (optional)
@@ -210,7 +237,7 @@ class FacebookScraperApp(tk.Tk):
             self.cookies_var.set(filename)
 
     def on_scrape_clicked(self):
-        group = self.group_var.get().strip()
+        group = _normalize_group_input(self)
         keyword = self.keyword_var.get().strip()
         limit_str = self.limit_var.get().strip() or "100"
         cookies_file = self.cookies_var.get().strip() or None
