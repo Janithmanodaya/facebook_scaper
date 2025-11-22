@@ -4,8 +4,10 @@ import random
 import re
 import sys
 import time
+import webbrowser
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
+
 
 # Global flag controlled by UI/CLI to filter posts by Sri Lankan phone numbers
 SL_FILTER_ENABLED = False
@@ -14,6 +16,14 @@ SL_FILTER_ENABLED = False
 # - +94XXXXXXXX or +94XXXXXXXXX (country code +94 and 8–9 digits)
 # - 03XXXXXXXX or 07XXXXXXXX (local formats starting with 03 or 07 and 8 digits)
 SL_PHONE_REGEX = re.compile(r"(?:\+94\d{8,9}|0(?:3|7)\d{7,8})")
+
+# Facebook often embeds real image URLs inside HTML (e.g. scontent.xx.fbcdn.net)
+# and shows inline SVG icons as <img src="data:...">. We detect the real media URLs
+# via a relaxed regex so that we can download photos reliably.
+FB_IMAGE_URL_REGEX = re.compile(
+    r"https?://[^\"'\s]+?\.(?:jpg|jpeg|png|webp)",
+    re.IGNORECASE,
+)
 
 
 def contains_sl_phone(text: str) -> bool:
@@ -190,15 +200,35 @@ def extract_posts_from_dom(
         except Exception:
             html = ""
 
+        # If Selenium's .text is empty (common with some FB layouts), try to
+        # derive a plain-text snippet from the raw HTML so the CSV has content.
+        if not text and html:
+            # Strip tags with a simple regex-based approach
+            rough = re.sub(r"<[^>]+>", " ", html)
+            # Collapse whitespace
+            rough = " ".join(rough.split())
+            text = rough
+
         image_urls: List[str] = []
         try:
             img_elements = art.find_elements(By.XPATH, ".//img")
             for img in img_elements:
                 src = img.get_attribute("src") or ""
-                if src and src not in image_urls:
+                if not src:
+                    continue
+                if src.startswith("data:"):
+                    # Skip inline SVG/icons here; we'll look for real media URLs below.
+                    continue
+                if src not in image_urls:
                     image_urls.append(src)
         except Exception:
             pass
+
+        # As a fallback, scan the HTML for any direct image URLs (fbcdn, scontent, etc.).
+        if html:
+            for match in FB_IMAGE_URL_REGEX.findall(html):
+                if match not in image_urls:
+                    image_urls.append(match)
 
         posts.append(
             {
@@ -244,7 +274,7 @@ def build_cookie_header(cookies: List[Dict[str, str]]) -> str:
 
 def download_images_for_posts(
     posts: List[Dict[str, str]],
-    cookies: List[Dict[str, str]] | None = None,
+    cookies: Optional[List[Dict[str, str]]] = None,
 ) -> None:
     """
     Download images for each post and attach 'image_paths' (semicolon-separated)
@@ -253,29 +283,50 @@ def download_images_for_posts(
     if not posts:
         return
 
-    img_dir = Path("fb_images")
+    # Always save images next to this script, in a fixed "fb_images" folder
+    script_dir = Path(__file__).resolve().parent
+    img_dir = script_dir / "fb_images"
     img_dir.mkdir(exist_ok=True)
 
-    headers = {}
+    headers_base = {}
     if cookies:
         cookie_header = build_cookie_header(cookies)
         if cookie_header:
-            headers["Cookie"] = cookie_header
-    # A minimal UA helps slightly
-    headers.setdefault(
+            headers_base["Cookie"] = cookie_header
+
+    # Try to mimic a real browser as much as possible. Facebook is strict and
+    # may return HTTP 403 for image requests that look like bots.
+    headers_base.setdefault(
         "User-Agent",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     )
+    headers_base.setdefault("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+    headers_base.setdefault("Accept-Language", "en-US,en;q=0.9")
+    headers_base.setdefault("Connection", "keep-alive")
 
     for i, post in enumerate(posts, start=1):
         image_urls = post.get("image_urls") or []
         local_paths: List[str] = []
+
+        # Use the post URL as Referer when downloading images. Facebook often
+        # returns HTTP 403 if there is no or an unexpected Referer header.
+        post_url = post.get("post_url", "") or "https://www.facebook.com/"
+        headers = dict(headers_base)
+        headers["Referer"] = post_url
+
         for j, url in enumerate(image_urls, start=1):
+            # Skip data: URIs (SVG icons, inline images, etc.) which are not real files
+            if url.startswith("data:"):
+                print(f"[DEBUG] Skipping inline image data URI for post {i}")
+                continue
             try:
                 resp = requests.get(url, headers=headers, timeout=20)
                 if resp.status_code != 200:
-                    print(f"[DEBUG] Failed to download image {url}: HTTP {resp.status_code}")
+                    print(
+                        f"[DEBUG] Failed to download image {url}: "
+                        f"HTTP {resp.status_code}"
+                    )
                     continue
                 ext = ".jpg"
                 filename = img_dir / f"post_{i}_img{j}{ext}"
@@ -327,7 +378,7 @@ def selenium_collect_posts(
     group_input: str,
     keyword: str,
     max_posts: int,
-    cookies: List[Dict[str, str]] | None = None,
+    cookies: Optional[List[Dict[str, str]]] = None,
     only_sl_phones: bool = False,
 ) -> List[Dict[str, str]]:
     """
@@ -471,6 +522,7 @@ def main():
         cookies_path = Path(cookies_path_str)
         if not cookies_path.is_file():
             print(f"Cookies file not found: {cookies_path}")
+            input("Press Enter to exit...")
             return
         cookies = load_netscape_cookies(cookies_path)
         print(f"[INFO] Loaded {len(cookies)} cookies from {cookies_path}")
@@ -487,13 +539,27 @@ def main():
 
     if not collected:
         print("[INFO] No posts collected, nothing to save.")
+        input("Press Enter to exit...")
         return
 
     download_images_for_posts(collected, cookies=cookies or None)
-    out_path = Path("fb_group_posts_selenium.csv")
+
+    # Always save CSV next to this script so the folder is predictable
+    script_dir = Path(__file__).resolve().parent
+    out_path = script_dir / "fb_group_posts_selenium.csv"
+
     save_posts_to_csv(collected, out_path)
-    print(f"[INFO] Saved results to {out_path.resolve()}")
-    print("[INFO] Images (if any) are in the fb_images/ folder.")
+    print(f"[INFO] Saved results to {out_path}")
+    print(f"[INFO] Images (if any) are in: {script_dir / 'fb_images'}")
+    print(f"[INFO] You can open this folder in Explorer: {script_dir}")
+
+    # For users who run the script by double-clicking the .py file on Windows,
+    # keep the console window open so they can read the messages.
+    try:
+        input("Scrape finished. Press Enter to close this window...")
+    except EOFError:
+        # In environments without a real stdin (e.g., some schedulers), ignore.
+        pass
 
 
 # ------------------ Advanced Tkinter GUI wrapper ------------------ #
@@ -513,7 +579,8 @@ class AdvancedSeleniumScraperApp(tk.Tk):
     - Checkbox: Only posts with Sri Lankan phone number
     - Buttons: Start Scrape, Open Output Folder, Reload Results, Close
     - Results table with columns: Post URL, Post Text, Image Paths
-    - Status line at the top of the main area
+    - Status line and progress bar at the top of the main area
+    - Double-click a row to open the post in your web browser
     """
 
     def __init__(self):
@@ -532,6 +599,17 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         self.data: List[Dict[str, str]] = []
 
         self._build_ui()
+
+        # Improve default look-and-feel where possible
+        try:
+            style = ttk.Style(self)
+            # Use a more modern theme if available
+            for candidate in ("clam", "vista", "default"):
+                if candidate in style.theme_names():
+                    style.theme_use(candidate)
+                    break
+        except Exception:
+            pass
 
     # ---------- UI construction ----------
 
@@ -595,6 +673,14 @@ class AdvancedSeleniumScraperApp(tk.Tk):
             side=tk.LEFT, anchor="w"
         )
 
+        # Progress bar to give visual feedback while scraping
+        self.progress = ttk.Progressbar(
+            status_frame,
+            mode="indeterminate",
+            length=220,
+        )
+        self.progress.pack(side=tk.RIGHT, padx=(5, 0), anchor="e")
+
         table_frame = ttk.Frame(self, padding=10)
         table_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
@@ -621,6 +707,9 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="we")
 
+        # Double-click a row to open the post URL in the default web browser
+        self.tree.bind("<Double-1>", self._on_open_selected_post)
+
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
 
@@ -635,6 +724,19 @@ class AdvancedSeleniumScraperApp(tk.Tk):
     def _set_status(self, text: str):
         self.status_var.set(text)
         self.update_idletasks()
+
+    def _start_progress(self):
+        try:
+            self.progress.start(10)
+        except Exception:
+            pass
+
+    def _stop_progress(self):
+        try:
+            self.progress.stop()
+            self.progress["value"] = 0
+        except Exception:
+            pass
 
     def _on_browse_cookies(self):
         path = filedialog.askopenfilename(
@@ -676,6 +778,7 @@ class AdvancedSeleniumScraperApp(tk.Tk):
                 return
 
         self._set_status("Running… please watch the browser window and console.")
+        self._start_progress()
         t = threading.Thread(
             target=self._run_scrape_thread,
             args=(group_input, keyword, max_posts, cookies, only_sl),
@@ -702,29 +805,57 @@ class AdvancedSeleniumScraperApp(tk.Tk):
             if not posts:
                 self.after(
                     0,
-                    lambda: self._set_status("Done. No posts matched the filters."),
+                    lambda: (
+                        self._stop_progress(),
+                        self._set_status("Done. No posts matched the filters."),
+                        messagebox.showinfo(
+                            "Scrape finished", "No posts matched the selected filters."
+                        ),
+                    ),
                 )
                 return
 
             download_images_for_posts(posts, cookies=cookies or None)
-            out_path = Path("fb_group_posts_selenium.csv")
+
+            # Save CSV next to this script so the location is always clear
+            script_dir = Path(__file__).resolve().parent
+            out_path = script_dir / "fb_group_posts_selenium.csv"
+
             save_posts_to_csv(posts, out_path)
             self.data = posts
 
             def update_ui():
                 self._populate_table()
+                self._stop_progress()
+
+                script_dir = Path(__file__).resolve().parent
+                csv_path = script_dir / "fb_group_posts_selenium.csv"
+                images_path = script_dir / "fb_images"
+
                 self._set_status(
-                    f"Done. Found {len(posts)} post(s). "
-                    "Data saved to fb_group_posts_selenium.csv."
+                    f"Done. Found {len(posts)} post(s). Data saved to {csv_path.name}."
                 )
+                try:
+                    messagebox.showinfo(
+                        "Scrape finished",
+                        f"Found {len(posts)} post(s).\n\n"
+                        f"Results saved to:\n{csv_path}\n\n"
+                        f"Images (if any) are in:\n{images_path}\n\n"
+                        "You can also double-click a row to open the post in your browser.",
+                    )
+                except Exception:
+                    # Message boxes can fail in some edge cases; ignore quietly.
+                    pass
 
             self.after(0, update_ui)
         except Exception as e:
+            error_message = str(e)
             self.after(
                 0,
-                lambda: (
+                lambda msg=error_message: (
+                    self._stop_progress(),
                     self._set_status("Error during scrape."),
-                    messagebox.showerror("Error", str(e)),
+                    messagebox.showerror("Error", msg),
                 ),
             )
 
@@ -744,10 +875,13 @@ class AdvancedSeleniumScraperApp(tk.Tk):
             )
 
     def _on_reload_results(self):
-        path = Path("fb_group_posts_selenium.csv")
+        # Reload the CSV from the same folder as this script
+        script_dir = Path(__file__).resolve().parent
+        path = script_dir / "fb_group_posts_selenium.csv"
         if not path.is_file():
             messagebox.showinfo(
-                "Info", "fb_group_posts_selenium.csv not found in the current folder."
+                "Info",
+                f"{path.name} not found in:\n{script_dir}",
             )
             return
 
@@ -783,6 +917,25 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Could not open folder: {e}")
 
+    def _on_open_selected_post(self, event):
+        """
+        Double-click handler: open the selected post URL in the default browser.
+        """
+        selection = self.tree.selection()
+        if not selection:
+            return
+        item_id = selection[0]
+        values = self.tree.item(item_id, "values")
+        if not values:
+            return
+        post_url = values[0]
+        if not post_url:
+            return
+        try:
+            webbrowser.open(post_url)
+        except Exception:
+            messagebox.showerror("Error", "Could not open the post URL in browser.")
+
 
 def run_selenium_scrape(
     group_input: str,
@@ -815,10 +968,14 @@ def run_selenium_scrape(
         return
 
     download_images_for_posts(posts, cookies=cookies or None)
-    out_path = Path("fb_group_posts_selenium.csv")
+
+    # Save CSV next to this script
+    script_dir = Path(__file__).resolve().parent
+    out_path = script_dir / "fb_group_posts_selenium.csv"
+
     save_posts_to_csv(posts, out_path)
-    print(f"[INFO] Saved results to {out_path.resolve()}")
-    print("[INFO] Images (if any) are in the fb_images/ folder.")
+    print(f"[INFO] Saved results to {out_path}")
+    print(f"[INFO] Images (if any) are in: {script_dir / 'fb_images'}")
 
 
 if __name__ == "__main__":
