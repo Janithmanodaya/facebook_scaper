@@ -6,20 +6,18 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from pathlib import Path
 
-# ------------------ Auto package install ------------------ #
+# ------------------ Dependency check (no auto-install) ------------------ #
 
-REQUIRED_PACKAGES = ["facebook_scraper", "pandas"]
+try:
+    from facebook_scraper import get_posts  # type: ignore  # noqa: E402
+except ImportError as e:
+    print("The 'facebook_scraper' package is not installed.")
+    print("Please install it by running:")
+    print("    python -m pip install facebook_scraper")
+    raise
 
-
-def ensure_package(package_name):
-    try:
-        importlib.import_module(package_name)
-    except ImportError:
-        print(f"Installing missing package: {package_name}")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-
-
-def ensure_dependencies():
+try:
+    import pandas as pdf ensure_dependencies():
     for pkg in REQUIRED_PACKAGES:
         ensure_package(pkg)
 
