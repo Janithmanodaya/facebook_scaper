@@ -393,9 +393,10 @@ def selenium_collect_posts(
                     continue
 
                 # Keyword filter (if provided)
-                if keyword and (keyword not in text_lower andnue
+                if keyword and (keyword not in text_lower and keyword not in html_lower):
+                    continue
 
-                collected.append(p)
+               d.append(p)
                 print(f"[DEBUG] Collected post #{len(collected)}: {url}")
 
                 if len(collected) >= max_posts:
