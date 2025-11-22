@@ -255,7 +255,9 @@ def download_images_for_posts(
     if not posts:
         return
 
-    img_dir = Path("fb_images")
+    # Always save images next to this script, in a fixed "fb_images" folder
+    script_dir = Path(__file__).resolve().parent
+    img_dir = script_dir / "fb_images"
     img_dir.mkdir(exist_ok=True)
 
     headers = {}
@@ -274,6 +276,10 @@ def download_images_for_posts(
         image_urls = post.get("image_urls") or []
         local_paths: List[str] = []
         for j, url in enumerate(image_urls, start=1):
+            # Skip data: URIs (SVG icons, inline images, etc.) which are not real files
+            if url.startswith("data:"):
+                print(f"[DEBUG] Skipping inline image data URI for post {i}")
+                continue
             try:
                 resp = requests.get(url, headers=headers, timeout=20)
                 if resp.status_code != 200:
@@ -494,10 +500,16 @@ def main():
         return
 
     download_images_for_posts(collected, cookies=cookies or None)
-    out_path = Path("fb_group_posts_selenium.csv")
+
+    # Always save CSV next to this script so the folder is predictable
+    script_dir = Path(__file__).resolve().parent
+    out_path = script_dir / "fb_group_posts_selenium.csv"
+
     save_posts_to_csv(collected, out_path)
-    print(f"[INFO] Saved results to {out_path.resolve()}")
-    print("[INFO] Images (if any) are in the fb_images/ folder.")
+    print(f"[INFO] Saved results to {out_path}")
+    print(f"[INFO] Images (if any) are in: {script_dir / 'fb_images'}")
+    print(f"[INFO] You can open this folder in Explorer: {script_dir}")
+
     # For users who run the script by double-clicking the .py file on Windows,
     # keep the console window open so they can read the messages.
     try:
@@ -761,23 +773,31 @@ class AdvancedSeleniumScraperApp(tk.Tk):
                 return
 
             download_images_for_posts(posts, cookies=cookies or None)
-            out_path = Path("fb_group_posts_selenium.csv")
+
+            # Save CSV next to this script so the location is always clear
+            script_dir = Path(__file__).resolve().parent
+            out_path = script_dir / "fb_group_posts_selenium.csv"
+
             save_posts_to_csv(posts, out_path)
             self.data = posts
 
             def update_ui():
                 self._populate_table()
                 self._stop_progress()
+
+                script_dir = Path(__file__).resolve().parent
+                csv_path = script_dir / "fb_group_posts_selenium.csv"
+                images_path = script_dir / "fb_images"
+
                 self._set_status(
-                    f"Done. Found {len(posts)} post(s). "
-                    "Data saved to fb_group_posts_selenium.csv."
+                    f"Done. Found {len(posts)} post(s). Data saved to {csv_path.name}."
                 )
                 try:
                     messagebox.showinfo(
                         "Scrape finished",
                         f"Found {len(posts)} post(s).\n\n"
-                        "Results saved to fb_group_posts_selenium.csv\n"
-                        "Images (if any) are in the fb_images folder.\n\n"
+                        f"Results saved to:\n{csv_path}\n\n"
+                        f"Images (if any) are in:\n{images_path}\n\n"
                         "You can also double-click a row to open the post in your browser.",
                     )
                 except Exception:
@@ -812,10 +832,13 @@ class AdvancedSeleniumScraperApp(tk.Tk):
             )
 
     def _on_reload_results(self):
-        path = Path("fb_group_posts_selenium.csv")
+        # Reload the CSV from the same folder as this script
+        script_dir = Path(__file__).resolve().parent
+        path = script_dir / "fb_group_posts_selenium.csv"
         if not path.is_file():
             messagebox.showinfo(
-                "Info", "fb_group_posts_selenium.csv not found in the current folder."
+                "Info",
+                f"{path.name} not found in:\n{script_dir}",
             )
             return
 
@@ -902,10 +925,14 @@ def run_selenium_scrape(
         return
 
     download_images_for_posts(posts, cookies=cookies or None)
-    out_path = Path("fb_group_posts_selenium.csv")
+
+    # Save CSV next to this script
+    script_dir = Path(__file__).resolve().parent
+    out_path = script_dir / "fb_group_posts_selenium.csv"
+
     save_posts_to_csv(posts, out_path)
-    print(f"[INFO] Saved results to {out_path.resolve()}")
-    print("[INFO] Images (if any) are in the fb_images/ folder.")
+    print(f"[INFO] Saved results to {out_path}")
+    print(f"[INFO] Images (if any) are in: {script_dir / 'fb_images'}")
 
 
 if __name__ == "__main__":
