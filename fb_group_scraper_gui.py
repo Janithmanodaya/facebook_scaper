@@ -10,15 +10,15 @@ from pathlib import Path
 
 try:
     from facebook_scraper import get_posts  # type: ignore  # noqa: E402
-except ImportError as e:
+except ImportError:
     print("The 'facebook_scraper' package is not installed.")
     print("Please install it by running:")
     print("    python -m pip install facebook_scraper")
     raise
 
 try:
-    import pandas as pdf ensure_dependencies():
-    for pkg in REQUIRED_PACKAGES:
+    import pandas as pd  # type: ignore  # noqa: E402
+except pkg in REQUIRED_PACKAGES:
         ensure_package(pkg)
 
 
