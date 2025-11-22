@@ -242,7 +242,7 @@ class FacebookScraperApp(tk.Tk):
         self.update_idletasks()
 
     def on_browse_cookies(self):
-        filename = filedialog.asksopenfilename(
+        filename = filedialog.askopenfilename(
             title="Select cookies.txt file",
             filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
         )
