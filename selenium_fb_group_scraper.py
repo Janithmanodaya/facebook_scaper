@@ -84,51 +84,43 @@ def normalize_group_url(raw: str) -> str:
     return raw
 
 
-def extract_posts_from_page_source(html: str, group_id_or_slug: str) -> List[Dict[str, str]]:
+def extract_posts_from_dom(driver: webdriver.Chrome, group_id_or_slug: str) -> List[Dict[str, str]]:
     """
-    Very heuristic extraction using simple string search.
-    For robustness, we avoid depending on fragile CSS classes.
+    Extract posts from the live DOM using Selenium instead of raw HTML string parsing.
 
-    We search for '/groups/<id>/posts/' links and take some surrounding text.
+    Strategy:
+    - Find post containers as elements with role="article" inside role="feed".
+    - Inside each article, look for a link that contains "/groups/.../posts/...".
+    - Use the article text as post_text.
     """
     posts: List[Dict[str, str]] = []
-    marker = f"/groups/{group_id_or_slug}/posts/"
-    idx = 0
-    while True:
-        idx = html.find(marker, idx)
-        if idx == -1:
-            break
+    try:
+        articles = driver.find_elements(
+            By.XPATH, "//div[@role='feed']//div[@role='article']"
+        )
+    except Exception as e:
+        print(f"[DEBUG] Failed to locate post containers: {e}")
+        return posts
 
-        # Extract URL
-        start = html.rfind('"', 0, idx)
-        end = html.find('"', idx)
-        if start == -1 or end == -1:
-            idx += len(marker)
+    for art in articles:
+        try:
+            link_el = art.find_element(
+                By.XPATH,
+                ".//a[contains(@href, '/groups/') and contains(@href, '/posts/')]",
+            )
+            href = link_el.get_attribute("href") or ""
+            if not href:
+                continue
+            text = art.text or ""
+            posts.append(
+                {
+                    "post_url": href,
+                    "post_text": text[:2000],
+                }
+            )
+        except Exception:
+            # If we can't find a suitable link inside this article, skip it
             continue
-        href = html[start + 1 : end]
-        if href.startswith("/"):
-            href = "https://www.facebook.com" + href
-
-        # Extract some text around the link as "post text"
-        context_start = max(0, start - 800)
-        context_end = min(len(html), end + 800)
-        context = html[context_start:context_end]
-
-        # Very rough text cleanup
-        text = (
-            context.replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&amp;", "&")
-        )
-
-        posts.append(
-            {
-                "post_url": href,
-                "post_text": text[:1000],  # limit size
-            }
-        )
-
-        idx = end
 
     return posts
 
@@ -195,16 +187,15 @@ def main():
 
         time.sleep(5)
 
-        print("[INFO] Scrolling and collecting posts...")
+        print("[INFO] Scrolling and collecting posts via Selenium...")
         collected: List[Dict[str, str]] = []
         seen_urls = set()
-
-        scroll_pause = 3
+        scroll_pause_base = 2.5
         last_height = driver.execute_script("return document.body.scrollHeight")
+        actions = ActionChains(driver)
 
-        for i in range(20):  # 20 scroll iterations
-            html = driver.page_source
-            posts = extract_posts_from_page_source(html, gid)
+        for _ in range(25):
+            posts = extract_posts_from_dom(driver, gid)
 
             for p in posts:
                 url = p["post_url"]
@@ -225,8 +216,18 @@ def main():
             if len(collected) >= max_posts:
                 break
 
+            # Human-like scroll: move mouse randomly, then scroll
+            try:
+                actions.move_by_offset(random.randint(-50, 50), random.randint(-30, 30)).perform()
+            except Exception:
+                pass
+
             driver.find_element(By.TAG_NAME, "body").send_keys(Keys.END)
-            time.sleep(scroll_pause)
+
+            # Randomized pause between scrolls
+            pause = scroll_pause_base + random.uniform(0.5, 2.5)
+            time.sleep(pause)
+
             new_height = driver.execute_script("return document.body.scrollHeight")
             if new_height == last_height:
                 print("[INFO] Reached bottom of page or no new content.")
@@ -421,8 +422,7 @@ def run_selenium_scrape(group_input: str, keyword: str, max_posts: int, cookies_
         actions = ActionChains(driver)
 
         for _ in range(25):
-            html = driver.page_source
-            posts = extract_posts_from_page_source(html, gid)
+            posts = extract_posts_from_dom(driver, gid)
 
             for p in posts:
                 url = p["post_url"]
