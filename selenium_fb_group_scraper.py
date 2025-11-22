@@ -165,6 +165,21 @@ def extract_posts_from_dom(driver: webdriver.Chrome, group_id_or_slug: str) -> L
     return posts
 
 
+def compute_dynamic_delay(iter_index: int, base: float = 2.5) -> float:
+    """
+    Compute a human-like delay between scrolls.
+
+    - base: base seconds
+    - random jitter: ±0.8s
+    - small backoff as iter_index grows (scrolls get gradually slower)
+    """
+    jitter = random.uniform(-0.8, 0.8)
+    backoff_steps = iter_index // 5  # 0,1,2,...
+    backoff = backoff_steps * random.uniform(0.3, 0.6)
+    delay = base + jitter + backoff
+    return max(delay, 0.8)
+
+
 def main():
     print("=== Selenium Facebook Group Scraper (experimental) ===")
 
