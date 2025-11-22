@@ -8,6 +8,14 @@ from typing import List, Dict
 import random
 
 try:
+    import requests
+except ImportError:
+    print("The 'requests' package is not installed.")
+    print("Install it with:")
+    print("    python -m pip install requests")
+    sys.exit(1)
+
+try:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.common.by import By
@@ -86,12 +94,15 @@ def normalize_group_url(raw: str) -> str:
 
 def extract_posts_from_dom(driver: webdriver.Chrome, group_id_or_slug: str) -> List[Dict[str, str]]:
     """
-    Extract posts from the live DOM using Selenium instead of raw HTML string parsing.
+    Extract posts from the live DOM using Selenium.
 
     Strategy:
     - Find post containers as elements with role="article" inside role="feed".
     - Inside each article, look for a link that contains "/groups/.../posts/...".
-    - Use the article text as post_text.
+    - Collect:
+      - post_url
+      - post_text (visible text of the article)
+      - image_urls (all <img> src values within the article)
     """
     posts: List[Dict[str, str]] = []
     try:
@@ -111,11 +122,25 @@ def extract_posts_from_dom(driver: webdriver.Chrome, group_id_or_slug: str) -> L
             href = link_el.get_attribute("href") or ""
             if not href:
                 continue
+
             text = art.text or ""
+
+            # Collect image URLs within this article
+            image_urls: List[str] = []
+            try:
+                img_elements = art.find_elements(By.XPATH, ".//img")
+                for img in img_elements:
+                    src = img.get_attribute("src") or ""
+                    if src and src not in image_urls:
+                        image_urls.append(src)
+            except Exception:
+                pass
+
             posts.append(
                 {
                     "post_url": href,
-                    "post_text": text[:2000],
+                    "post_text": text[:4000],
+                    "image_urls": image_urls,
                 }
             )
         except Exception:
@@ -166,6 +191,11 @@ def main():
 
     chrome_options = Options()
     chrome_options.add_argument("--start-maximized")
+    # Try to look more like a regular browser
+    chrome_options.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
     # Uncomment the next line to try headless mode (not recommended for FB)
     # chrome_options.add_argument("--headless=new")
 
