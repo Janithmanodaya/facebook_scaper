@@ -766,7 +766,13 @@ class AdvancedSeleniumScraperApp(tk.Tk):
             messagebox.showerror("Error", f"Failed to reload CSV: {e}")
 
     def _on_open_output(self):
-        folder = Path(".").resolve()
+        """
+        Open the folder where the script (and CSV/images) live, not the OS user home.
+        """
+        # Use the directory of this script file as the output folder base.
+        script_dir = Path(__file__).resolve().parent
+        folder = script_dir
+
         try:
             if sys.platform.startswith("win"):
                 os.startfile(str(folder))  # type: ignore[attr-defined]
