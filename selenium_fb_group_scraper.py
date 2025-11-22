@@ -6,7 +6,7 @@ import sys
 import time
 import webbrowser
 from pathlib import Path
-from typing import Dict, Linews</t
+from typing import Dict, List, Optional
 
 
 # Global flag controlled by UI/CLI to filter posts by Sri Lankan phone numbers
@@ -246,7 +246,7 @@ def build_cookie_header(cookies: List[Dict[str, str]]) -> str:
 
 def download_images_for_posts(
     posts: List[Dict[str, str]],
-    cookies: List[Dict[str, str]] | None = None,
+    cookies: Optional[List[Dict[str, str]]] = None,
 ) -> None:
     """
     Download images for each post and attach 'image_paths' (semicolon-separated)
@@ -329,7 +329,7 @@ def selenium_collect_posts(
     group_input: str,
     keyword: str,
     max_posts: int,
-    cookies: List[Dict[str, str]] | None = None,
+    cookies: Optional[List[Dict[str, str]]] = None,
     only_sl_phones: bool = False,
 ) -> List[Dict[str, str]]:
     """
