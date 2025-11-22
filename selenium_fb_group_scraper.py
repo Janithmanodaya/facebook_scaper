@@ -247,5 +247,223 @@ def main():
         driver.quit()
 
 
+# ------------------ Simple Tkinter UI wrapper ------------------ #
+
+try:
+    import threading
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox
+except ImportError:
+    tk = None  # UI will not be available
+
+
+class SeleniumScraperApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Facebook Group Selenium Scraper")
+        self.geometry("700x260")
+        self.minsize(650, 230)
+
+        self.group_var = tk.StringVar()
+        self.keyword_var = tk.StringVar()
+        self.max_posts_var = tk.StringVar(value="50")
+        self.cookies_var = tk.StringVar()
+        self.status_var = tk.StringVar(value="Idle")
+
+        self._build_ui()
+
+    def _build_ui(self):
+        frm = ttk.Frame(self, padding=10)
+        frm.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frm, text="Group URL / ID:").grid(row=0, column=0, sticky="e", padx=5, pady=4)
+        ttk.Entry(frm, textvariable=self.group_var, width=60).grid(
+            row=0, column=1, columnspan=3, sticky="we", pady=4
+        )
+
+        ttk.Label(frm, text="Keyword (optional):").grid(row=1, column=0, sticky="e", padx=5, pady=4)
+        ttk.Entry(frm, textvariable=self.keyword_var, width=30).grid(
+            row=1, column=1, sticky="we", pady=4
+        )
+
+        ttk.Label(frm, text="Max posts:").grid(row=1, column=2, sticky="e", padx=5, pady=4)
+        ttk.Entry(frm, textvariable=self.max_posts_var, width=10).grid(
+            row=1, column=3, sticky="w", pady=4
+        )
+
+        ttk.Label(frm, text="Cookies file (cookies.txt):").grid(
+            row=2, column=0, sticky="e", padx=5, pady=4
+        )
+        ttk.Entry(frm, textvariable=self.cookies_var, width=45).grid(
+            row=2, column=1, sticky="we", pady=4
+        )
+        ttk.Button(frm, text="Browse...", command=self._on_browse).grid(
+            row=2, column=2, sticky="w", padx=5, pady=4
+        )
+
+        ttk.Button(frm, text="Start Scrape", command=self._on_start).grid(
+            row=3, column=2, sticky="e", padx=5, pady=10
+        )
+        ttk.Button(frm, text="Close", command=self.destroy).grid(
+            row=3, column=3, sticky="w", padx=5, pady=10
+        )
+
+        status_lbl = ttk.Label(frm, textvariable=self.status_var)
+        status_lbl.grid(row=4, column=0, columnspan=4, sticky="w", padx=5, pady=(5, 0))
+
+        for i in range(4):
+            frm.columnconfigure(i, weight=1)
+
+    def _on_browse(self):
+        path = filedialog.askopenfilename(
+            title="Select cookies.txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if path:
+            self.cookies_var.set(path)
+
+    def _run_scrape(self, group_input, keyword, max_posts, cookies_file):
+        self.status_var.set("Running Selenium scraper... see console for logs.")
+        self.update_idletasks()
+
+        # Call the existing CLI-based main logic but bypass input()
+        # We replicate main() behavior here using helper function.
+        try:
+            run_selenium_scrape(group_input, keyword, max_posts, cookies_file)
+            self.status_var.set("Done. Check fb_group_posts_selenium.csv and console logs.")
+        except Exception as e:
+            self.status_var.set("Error.")
+            messagebox.showerror("Error", str(e))
+
+    def _on_start(self):
+        group_input = self.group_var.get().strip()
+        keyword = self.keyword_var.get().strip()
+        max_posts_str = self.max_posts_var.get().strip() or "50"
+        cookies_file = self.cookies_var.get().strip() or ""
+
+        if not group_input:
+            messagebox.showerror("Error", "Please enter a group URL or ID.")
+            return
+
+        try:
+            max_posts = int(max_posts_str)
+            if max_posts <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "Max posts must be a positive integer.")
+            return
+
+        t = threading.Thread(
+            target=self._run_scrape,
+            args=(group_input, keyword, max_posts, cookies_file),
+            daemon=True,
+        )
+        t.start()
+
+
+def run_selenium_scrape(group_input: str, keyword: str, max_posts: int, cookies_path_str: str):
+    """
+    Non-interactive wrapper around main() logic so we can call it from the GUI.
+    """
+    keyword = (keyword or "").strip().lower()
+    cookies = []
+    if cookies_path_str:
+        cookies_path = Path(cookies_path_str)
+        if not cookies_path.is_file():
+            raise FileNotFoundError(f"Cookies file not found: {cookies_path}")
+        cookies = load_netscape_cookies(cookies_path)
+        print(f"[INFO] Loaded {len(cookies)} cookies from {cookies_path}")
+    else:
+        cookies_path = None
+
+    group_url = normalize_group_url(group_input)
+    gid = group_input
+    if "facebook.com" in group_input and "/groups/" in group_input:
+        tail = group_input.split("/groups/", 1)[1]
+        for sep in ("?", "#", "/"):
+            if sep in tail:
+                tail = tail.split(sep, 1)[0]
+        gid = tail
+
+    print(f"[INFO] Normalized group URL: {group_url}")
+    print(f"[INFO] Using group identifier for parsing: {gid}")
+
+    chrome_options = Options()
+    chrome_options.add_argument("--start-maximized")
+
+    driver = webdriver.Chrome(options=chrome_options)
+
+    try:
+        if cookies:
+            attach_cookies(driver, cookies)
+            driver.get(group_url)
+        else:
+            print("[INFO] No cookies provided. A browser window will open.")
+            print("      Log in to Facebook in that window, then press ENTER here in the console.")
+            driver.get("https://www.facebook.com/")
+            input("After you are logged in in the browser window, press ENTER here...")
+            driver.get(group_url)
+
+        time.sleep(5)
+
+        print("[INFO] Scrolling and collecting posts via Selenium...")
+        collected: List[Dict[str, str]] = []
+        seen_urls = set()
+        scroll_pause = 3
+        last_height = driver.execute_script("return document.body.scrollHeight")
+
+        for _ in range(20):
+            html = driver.page_source
+            posts = extract_posts_from_page_source(html, gid)
+
+            for p in posts:
+                url = p["post_url"]
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+
+                text_lower = p["post_text"].lower()
+                if keyword and keyword not in text_lower:
+                    continue
+
+                collected.append(p)
+                print(f"[DEBUG] Collected post #{len(collected)}: {url}")
+
+                if len(collected) >= max_posts:
+                    break
+
+            if len(collected) >= max_posts:
+                break
+
+            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.END)
+            time.sleep(scroll_pause)
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                print("[INFO] Reached bottom of page or no new content.")
+                break
+            last_height = new_height
+
+        print(f"[INFO] Finished. Collected {len(collected)} post(s) matching filter.")
+
+        if not collected:
+            return
+
+        out_path = Path("fb_group_posts_selenium.csv")
+        with out_path.open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=["post_url", "post_text"])
+            writer.writeheader()
+            for row in collected:
+                writer.writerow(row)
+
+        print(f"[INFO] Saved results to {out_path.resolve()}")
+
+    finally:
+        driver.quit()
+
+
 if __name__ == "__main__":
-    main()
+    if tk is not None:
+        app = SeleniumScraperApp()
+        app.mainloop()
+    else:
+        main()
