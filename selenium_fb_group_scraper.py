@@ -288,13 +288,13 @@ def download_images_for_posts(
     img_dir = script_dir / "fb_images"
     img_dir.mkdir(exist_ok=True)
 
-    headers = {}
+    headers_base = {}
     if cookies:
         cookie_header = build_cookie_header(cookies)
         if cookie_header:
-            headers["Cookie"] = cookie_header
+            headers_base["Cookie"] = cookie_header
     # A minimal UA helps slightly
-    headers.setdefault(
+    headers_base.setdefault(
         "User-Agent",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -303,6 +303,13 @@ def download_images_for_posts(
     for i, post in enumerate(posts, start=1):
         image_urls = post.get("image_urls") or []
         local_paths: List[str] = []
+
+        # Use the post URL as Referer when downloading images. Facebook often
+        # returns HTTP 403 if there is no or an unexpected Referer header.
+        post_url = post.get("post_url", "") or "https://www.facebook.com/"
+        headers = dict(headers_base)
+        headers["Referer"] = post_url
+
         for j, url in enumerate(image_urls, start=1):
             # Skip data: URIs (SVG icons, inline images, etc.) which are not real files
             if url.startswith("data:"):
@@ -311,7 +318,10 @@ def download_images_for_posts(
             try:
                 resp = requests.get(url, headers=headers, timeout=20)
                 if resp.status_code != 200:
-                    print(f"[DEBUG] Failed to download image {url}: HTTP {resp.status_code}")
+                    print(
+                        f"[DEBUG] Failed to download image {url}: "
+                        f"HTTP {resp.status_code}"
+                    )
                     continue
                 ext = ".jpg"
                 filename = img_dir / f"post_{i}_img{j}{ext}"
