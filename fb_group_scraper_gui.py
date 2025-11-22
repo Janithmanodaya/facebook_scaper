@@ -74,8 +74,12 @@ def scrape_group_posts(group, keyword, max_posts=100, cookies_file=None):
     keyword = (keyword or "").strip().lower()
     use_filter = bool(keyword)
 
+    print(f"[DEBUG] Starting scrape for group='{group}', keyword='{keyword}', "
+          f"max_posts={max_posts}, cookies_file={cookies_file!r}")
+
     result = []
     count = 0
+    total_seen = 0
 
     for post in get_posts(
         group=group,
@@ -83,12 +87,14 @@ def scrape_group_posts(group, keyword, max_posts=100, cookies_file=None):
         cookies=cookies_file if cookies_file else None,
         options={"allow_extra_requests": False},
     ):
+        total_seen += 1
         text = (post.get("post_text") or "").strip()
         shared_text = (post.get("shared_text") or "").strip()
 
         full_text = (text + " " + shared_text).lower()
 
         if use_filter and keyword not in full_text:
+            print(f"[DEBUG] Post #{total_seen} skipped (keyword not found).")
             continue
 
         record = {
@@ -101,9 +107,13 @@ def scrape_group_posts(group, keyword, max_posts=100, cookies_file=None):
         result.append(record)
         count += 1
 
+        print(f"[DEBUG] Post #{total_seen} matched. Total matches: {count}")
+
         if count >= max_posts:
+            print("[DEBUG] Reached max_posts limit, stopping scrape loop.")
             break
 
+    print(f"[DEBUG] Scrape finished. Total seen={total_seen}, total matched={count}")
     return result
 
 
