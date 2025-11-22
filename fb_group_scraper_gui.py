@@ -237,9 +237,8 @@ class FacebookScraperApp(tk.Tk):
             self.cookies_var.set(filename)
 
     def on_scrape_clicked(self):
-        group = _normalize_group_input(self)
-        keyword = self.keyword_var.get().strip()
-        limit_str = self.limit_var.get().strip() or "100"
+        # Normalize the group input (can be full URL or just ID/slug)
+        group = _normalize_group_input(self.group_var.getstr = self.limit_var.get().strip() or "100"
         cookies_file = self.cookies_var.get().strip() or None
 
         if not group:
