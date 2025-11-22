@@ -18,13 +18,11 @@ except ImportError:
 
 try:
     import pandas as pd  # type: ignore  # noqa: E402
-except pkg in REQUIRED_PACKAGES:
-        ensure_package(pkg)
-
-
-ensure_dependencies()
-from facebook_scraper import get_posts  # type: ignore  # noqa: E402
-import pandas as pd  # type: ignore  # noqa: E402
+except ImportError:
+    print("The 'pandas' package is not installed.")
+    print("Please install it by running:")
+    print("    python -m pip install pandas")
+    raise
 
 # ------------------ Scraping logic ------------------ #
 
