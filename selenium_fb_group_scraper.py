@@ -5,11 +5,14 @@ from pathlib import Path
 
 from typing import List, Dict
 
+import random
+
 try:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.common.by import By
     from selenium.webdriver.common.keys import Keys
+    from selenium.webdriver.common.action_chains import ActionChains
 except ImportError:
     print("The 'selenium' package is not installed.")
     print("Install it with:")
@@ -53,7 +56,7 @@ def load_netscape_cookies(cookies_path: Path) -> List[Dict[str, str]]:
 def attach_cookies(driver: webdriver.Chrome, cookies: List[Dict[str, str]]) -> None:
     # We must be on the base domain before adding cookies
     driver.get("https://www.facebook.com/")
-    time.sleep(3)
+    time.sleep(3 + random.uniform(0.5, 2.0))
     for c in cookies:
         cookie = {
             "domain": c["domain"],
@@ -413,10 +416,11 @@ def run_selenium_scrape(group_input: str, keyword: str, max_posts: int, cookies_
         print("[INFO] Scrolling and collecting posts via Selenium...")
         collected: List[Dict[str, str]] = []
         seen_urls = set()
-        scroll_pause = 3
+        scroll_pause_base = 2.5
         last_height = driver.execute_script("return document.body.scrollHeight")
+        actions = ActionChains(driver)
 
-        for _ in range(20):
+        for _ in range(25):
             html = driver.page_source
             posts = extract_posts_from_page_source(html, gid)
 
@@ -439,8 +443,18 @@ def run_selenium_scrape(group_input: str, keyword: str, max_posts: int, cookies_
             if len(collected) >= max_posts:
                 break
 
+            # Human-like scroll: move mouse randomly, then scroll
+            try:
+                actions.move_by_offset(random.randint(-50, 50), random.randint(-30, 30)).perform()
+            except Exception:
+                pass
+
             driver.find_element(By.TAG_NAME, "body").send_keys(Keys.END)
-            time.sleep(scroll_pause)
+
+            # Randomized pause between scrolls
+            pause = scroll_pause_base + random.uniform(0.5, 2.5)
+            time.sleep(pause)
+
             new_height = driver.execute_script("return document.body.scrollHeight")
             if new_height == last_height:
                 print("[INFO] Reached bottom of page or no new content.")
