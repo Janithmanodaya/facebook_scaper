@@ -293,12 +293,17 @@ def download_images_for_posts(
         cookie_header = build_cookie_header(cookies)
         if cookie_header:
             headers_base["Cookie"] = cookie_header
-    # A minimal UA helps slightly
+
+    # Try to mimic a real browser as much as possible. Facebook is strict and
+    # may return HTTP 403 for image requests that look like bots.
     headers_base.setdefault(
         "User-Agent",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     )
+    headers_base.setdefault("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+    headers_base.setdefault("Accept-Language", "en-US,en;q=0.9")
+    headers_base.setdefault("Connection", "keep-alive")
 
     for i, post in enumerate(posts, start=1):
         image_urls = post.get("image_urls") or []
