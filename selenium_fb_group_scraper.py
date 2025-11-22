@@ -786,12 +786,13 @@ class AdvancedSeleniumScraperApp(tk.Tk):
 
             self.after(0, update_ui)
         except Exception as e:
+            error_message = str(e)
             self.after(
                 0,
-                lambda: (
+                lambda msg=error_message: (
                     self._stop_progress(),
                     self._set_status("Error during scrape."),
-                    messagebox.showerror("Error", str(e)),
+                    messagebox.showerror("Error", msg),
                 ),
             )
 
