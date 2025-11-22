@@ -179,15 +179,16 @@ def main():
     try:
         if cookies:
             attach_cookies(driver, cookies)
-            # After attaching cookies, go directly to group
             driver.get(group_url)
+            print("[INFO] Browser opened with your cookies applied.")
+            print("      If you still see a login page, log in and open the group page manually,")
+            input("      then press ENTER here to start scraping...")
         else:
-            # No cookies: you may need to log in manually
             print("[INFO] No cookies provided. A browser window will open.")
-            print("      Log in to Facebook in that window, then press ENTER here.")
+            print("      Log in to Facebook in that window, navigate to the group page,")
+            input("      then press ENTER here to start scraping...")
             driver.get("https://www.facebook.com/")
-            input("After you are logged in in the browser window, press ENTER here...")
-            driver.get(group_url)
+            # User is expected to log in and open the group page manually
 
         time.sleep(5)
 
@@ -397,12 +398,15 @@ def run_selenium_scrape(group_input: str, keyword: str, max_posts: int, cookies_
         if cookies:
             attach_cookies(driver, cookies)
             driver.get(group_url)
+            print("[INFO] Browser opened with your cookies applied.")
+            print("      If you still see a login page, log in and open the group page manually,")
+            input("      then press ENTER here in the console to start scraping...")
         else:
             print("[INFO] No cookies provided. A browser window will open.")
-            print("      Log in to Facebook in that window, then press ENTER here in the console.")
+            print("      Log in to Facebook in that window, navigate to the group page,")
+            input("      then press ENTER here in the console to start scraping...")
             driver.get("https://www.facebook.com/")
-            input("After you are logged in in the browser window, press ENTER here...")
-            driver.get(group_url)
+            # User is expected to log in and open the group page manually
 
         time.sleep(5)
 
