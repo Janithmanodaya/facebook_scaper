@@ -6,6 +6,21 @@ from pathlib import Path
 from typing import List, Dict
 
 import random
+import re
+
+# Global flag controlled by UI/CLI to filter posts by Sri Lankan phone numbers
+SL_FILTER_ENABLED = False
+
+# Rough pattern for Sri Lankan phone numbers:
+# - +94XXXXXXXX or +94XXXXXXXXX (country code +94 and 8–9 digits)
+# - 03XXXXXXXX or 07XXXXXXXX (local formats starting with 03 or 07 and 8 digits)
+SL_PHONE_REGEX = re.compile(r"(?:\+94\d{8,9}|0(?:3|7)\d{7,8})")
+
+
+def contains_sl_phone(text: str) -> bool:
+    if not text:
+        return False
+    return SL_PHONE_REGEX.search(text) is not None
 
 try:
     import requests
