@@ -1,6 +1,5 @@
 import csv
 import os
-import random
 import re
 import sys
 import time
@@ -8,34 +7,6 @@ import webbrowser
 import html as html_lib
 from pathlib import Path
 from typing import Dict, List, Optional
-
-
-# Global flag controlled by UI/CLI to filter posts by Sri Lankan phone numbers
-SL_FILTER_ENABLED = False
-
-# Rough pattern for Sri Lankan phone numbers:
-# - +94XXXXXXXX or +94XXXXXXXXX (country code +94 and 8–9 digits)
-# - 03XXXXXXXX or 07XXXXXXXX (local formats starting with 03 or 07 and 8 digits)
-SL_PHONE_REGEX = re.compile(r"(?:\+94\d{8,9}|0(?:3|7)\d{7,8})")
-
-# Facebook often embeds real image URLs inside HTML (e.g. scontent.xx.fbcdn.net)
-# and shows inline SVG icons as <img src="data:...">. We detect the real media URLs
-# via a relaxed regex so that we can download photos reliably.
-# NOTE: Facebook image URLs almost always include a query string with
-# security / cache parameters (e.g. ?_nc_cat=..., ?_nc_eui2=...).
-# If we cut the URL at ".jpg" or ".png", the request will usually fail
-# (HTTP 403 / 404). Therefore the regex keeps the optional query part.
-FB_IMAGE_URL_REGEX = re.compile(
-    r"https?://[^\"'\\s]+?\\.(?:jpg|jpeg|png|webp)(?:\\?[^\"'\\s]*)?",
-    re.IGNORECASE,
-)
-
-
-def contains_sl_phone(text: str) -> bool:
-    if not text:
-        return False
-    return SL_PHONE_REGEX.search(text) is not None
-
 
 try:
     import requests
@@ -48,14 +19,19 @@ except ImportError:
 try:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.common.action_chains import ActionChains
     from selenium.webdriver.common.by import By
-    from selenium.webdriver.common.keys import Keys
 except ImportError:
     print("The 'selenium' package is not installed.")
     print("Install it with:")
     print("    python -m pip install selenium")
     sys.exit(1)
+
+
+# Facebook image URLs often contain long query strings – we keep them.
+FB_IMAGE_URL_REGEX = re.compile(
+    r"https?://[^\"'\\s]+?\\.(?:jpg|jpeg|png|webp)(?:\\?[^\"'\\s]*)?",
+    re.IGNORECASE,
+)
 
 
 def load_netscape_cookies(cookies_path: Path) -> List[Dict[str, str]]:
@@ -73,7 +49,6 @@ def load_netscape_cookies(cookies_path: Path) -> List[Dict[str, str]]:
                 continue
             parts = line.split("\t")
             if len(parts) != 7:
-                # Some exporters use spaces instead of tabs
                 parts = line.split()
                 if len(parts) != 7:
                     continue
@@ -92,9 +67,11 @@ def load_netscape_cookies(cookies_path: Path) -> List[Dict[str, str]]:
 
 
 def attach_cookies(driver: webdriver.Chrome, cookies: List[Dict[str, str]]) -> None:
-    # We must be on the base domain before adding cookies
+    """
+    Attach cookies to the browser for facebook.com, then continue.
+    """
     driver.get("https://www.facebook.com/")
-    time.sleep(3 + random.uniform(0.5, 2.0))
+    time.sleep(3)
     for c in cookies:
         cookie = {
             "domain": c["domain"],
@@ -107,162 +84,6 @@ def attach_cookies(driver: webdriver.Chrome, cookies: List[Dict[str, str]]) -> N
             driver.add_cookie(cookie)
         except Exception as e:
             print(f"[DEBUG] Failed to add cookie {c['name']}: {e}")
-
-
-def normalize_group_url(raw: str) -> str:
-    raw = raw.strip()
-    if "/groups/" in raw:
-        # Ensure we hit the posts tab
-        if "?" in raw:
-            raw = raw.split("?", 1)[0]
-        if not raw.endswith("/"):
-            raw += "/"
-        if "/posts/" not in raw:
-            raw += "posts"
-    return raw
-
-
-def extract_posts_from_dom(
-    driver: webdriver.Chrome,
-    group_id_or_slug: str,
-) -> List[Dict[str, str]]:
-    """
-    Extract posts from the live DOM using Selenium.
-
-    We try to be robust to Facebook layout changes:
-
-    - First, find all elements with role="article" anywhere on the page.
-    - For each article, try several strategies to locate a canonical post link:
-      1. A link containing "/groups/<group_id_or_slug>/posts/" or "/permalink/"
-      2. Any link containing "/groups/" and "/posts/"
-      3. As a final fallback, any link containing "/posts/"
-    - We then collect:
-      - post_url
-      - post_text (visible text of the article)
-      - html (innerHTML of the article, used as a fallback for phone detection)
-      - image_urls (all <img> src values within the article)
-    """
-    posts: List[Dict[str, str]] = []
-
-    try:
-        articles = driver.find_elements(By.XPATH, "//div[@role='article']")
-    except Exception as e:
-        print(f"[DEBUG] Failed to locate post containers: {e}")
-        return posts
-
-    print(f"[DEBUG] Found {len(articles)} candidate article elements on the page.")
-
-    gid = (group_id_or_slug or "").strip()
-
-    for idx, art in enumerate(articles, start=1):
-        href = ""
-        link_el = None
-
-        # Strategy 1: explicit group id/slug in the URL
-        if gid:
-            try:
-                xpath = (
-                    ".//a[contains(@href, '/groups/"
-                    + gid
-                    + "/posts/') or contains(@href, '/groups/"
-                    + gid
-                    + "/permalink/')]"
-                )
-                link_el = art.find_element(By.XPATH, xpath)
-            except Exception:
-                link_el = None
-
-        # Strategy 2: generic groups + posts pattern
-        if link_el is None:
-            try:
-                link_el = art.find_element(
-                    By.XPATH,
-                    ".//a[contains(@href, '/groups/') and contains(@href, '/posts/')]",
-                )
-            except Exception:
-                link_el = None
-
-        # Strategy 3: any link with "/posts/"
-        if link_el is None:
-            try:
-                link_el = art.find_element(By.XPATH, ".//a[contains(@href, '/posts/')]")
-            except Exception:
-                link_el = None
-
-        if link_el is None:
-            snippet = (art.text or "").replace("\n", " ")[:80]
-            print(f"[DEBUG] Article #{idx}: no post link found. Snippet='{snippet}'")
-            continue
-
-        href = link_el.get_attribute("href") or ""
-        if not href:
-            continue
-
-        text = art.text or ""
-        html = ""
-        try:
-            html = art.get_attribute("innerHTML") or ""
-        except Exception:
-            html = ""
-
-        # If Selenium's .text is empty (common with some FB layouts), try to
-        # derive a plain-text snippet from the raw HTML so the CSV has content.
-        if not text and html:
-            # Strip tags with a simple regex-based approach
-            rough = re.sub(r"<[^>]+>", " ", html)
-            # Collapse whitespace
-            rough = " ".join(rough.split())
-            text = rough
-
-        image_urls: List[str] = []
-        try:
-            # 1) Regula <=img> tags
-            img_elements = art.find_elements(By.XPATH, ".//img")
-            for img in img_elements:
-                src = img.get_attribute("src") or ""
-               tinue
-                if src.startswith("data:"):
-                    # Skip inline SVG/icons here; we'll look for real media URLs below.
-                    continue
-                if src not in image_urls:
-                    image_urls.append(src)
-        except Exception:
-            pass
-
-        # As a fallback, scan the HTML for any direct image URLs (fbcdn, scontent, etc.).
-        # We also unescape HTML entities (&amp; → &) to get a valid URL.
-        if html:
-            for match in FB_IMAGE_URL_REGEX.findall(html):
-                clean_url = html_lib.unescape(match)
-                if clean_url not in image_urls:
-                    image_urls.append(clean_url)
-
-        posts.append(
-            {
-                "post_url": href,
-                "post_text": text[:4000],
-                "html": html,
-                "image_urls": image_urls,
-            }
-        )
-
-    print(f"[DEBUG] extract_posts_from_dom: returning {len(posts)} post(s).")
-    return posts
-
-
-def compute_dynamic_delay(iter_index: int, base: float = 2.5) -> float:
-    """
-    Compute a human-like delay between scrolls.
-
-    - base: base seconds
-    - random jitter: ±0.8s
-    - small backoff as iter_index grows (scrolls get gradually slower)
-    """
-    jitter = random.uniform(-0.8, 0.8)
-    backoff_steps = iter_index // 5  # 0,1,2,...
-    backoff = backoff_steps * random.uniform(0.3, 0.6)
-    delay = base + jitter + backoff
-    return max(delay, 0.8)
 
 
 def build_cookie_header(cookies: List[Dict[str, str]]) -> str:
@@ -279,6 +100,102 @@ def build_cookie_header(cookies: List[Dict[str, str]]) -> str:
     return "; ".join(parts)
 
 
+def extract_single_post_from_dom(driver: webdriver.Chrome) -> Optional[Dict[str, str]]:
+    """
+    Extract a single post (text + images) from the current Facebook page.
+
+    Intended for:
+    - Direct post URLs
+    - Share URLs like /share/p/...
+    """
+    # Prefer role="article" containers.
+    try:
+        articles = driver.find_elements(By.XPATH, "//div[@role='article']")
+    except Exception as e:
+        print(f"[DEBUG] Failed to locate article containers: {e}")
+        articles = []
+
+    print(f"[DEBUG] Found {len(articles)} candidate article elements on the page.")
+
+    if not articles:
+        # Fallback: treat the whole body as one container.
+        try:
+            body = driver.find_element(By.TAG_NAME, "body")
+            articles = [body]
+        except Exception as e:
+            print(f"[DEBUG] Could not even get <body>: {e}")
+            return None
+
+    # Choose the first article that has visible text or images.
+    chosen = None
+    for art in articles:
+        text = art.text or ""
+        img_elements = []
+        try:
+            img_elements = art.find_elements(By.XPATH, ".//img")
+        except Exception:
+            img_elements = []
+        if text.strip() or img_elements:
+            chosen = art
+            break
+
+    if chosen is None:
+        print("[DEBUG] No suitable article element with text or images found.")
+        return None
+
+    text = chosen.text or ""
+    html = ""
+    try:
+        html = chosen.get_attribute("innerHTML") or ""
+    except Exception:
+        html = ""
+
+    # If text is empty but html exists, strip tags to get a rough plain text.
+    if not text and html:
+        rough = re.sub(r"<[^>]+>", " ", html)
+        text = " ".join(rough.split())
+
+    image_urls: List[str] = []
+    try:
+        img_elements = chosen.find_elements(By.XPATH, ".//img")
+        for img in img_elements:
+            src = img.get_attribute("src") or ""
+            if not src:
+                continue
+            if src.startswith("data:"):
+                # Skip inline SVG/icons.
+                continue
+            if src not in image_urls:
+                image_urls.append(src)
+    except Exception:
+        pass
+
+    if html:
+        # Also scan the raw HTML for any direct image URLs (fbcdn, scontent, etc.).
+        for match in FB_IMAGE_URL_REGEX.findall(html):
+            clean_url = html_lib.unescape(match)
+            if clean_url not in image_urls:
+                image_urls.append(clean_url)
+
+    current_url = ""
+    try:
+        current_url = driver.current_url or ""
+    except Exception:
+        current_url = ""
+
+    print(
+        f"[DEBUG] Single post extraction: text_len={len(text)}, "
+        f"images={len(image_urls)}"
+    )
+
+    return {
+        "post_url": current_url,
+        "post_text": text[:4000],
+        "html": html,
+        "image_urls": image_urls,
+    }
+
+
 def download_images_for_posts(
     posts: List[Dict[str, str]],
     cookies: Optional[List[Dict[str, str]]] = None,
@@ -290,25 +207,24 @@ def download_images_for_posts(
     if not posts:
         return
 
-    # Always save images next to this script, in a fixed "fb_images" folder
     script_dir = Path(__file__).resolve().parent
     img_dir = script_dir / "fb_images"
     img_dir.mkdir(exist_ok=True)
 
-    headers_base = {}
+    headers_base: Dict[str, str] = {}
     if cookies:
         cookie_header = build_cookie_header(cookies)
         if cookie_header:
             headers_base["Cookie"] = cookie_header
 
-    # Try to mimic a real browser as much as possible. Facebook is strict and
-    # may return HTTP 403 for image requests that look like bots.
     headers_base.setdefault(
         "User-Agent",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     )
-    headers_base.setdefault("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+    headers_base.setdefault(
+        "Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+    )
     headers_base.setdefault("Accept-Language", "en-US,en;q=0.9")
     headers_base.setdefault("Connection", "keep-alive")
 
@@ -321,12 +237,14 @@ def download_images_for_posts(
                 f"[DEBUG] Post #{i} ({post.get('post_url','')}) has no image URLs "
                 f"to download."
             )
-            post["image_paths"]//www.facebook.com/"
+            post["image_paths"] = ""
+            continue
+
+        post_url = post.get("post_url", "") or "https://www.facebook.com/"
         headers = dict(headers_base)
         headers["Referer"] = post_url
 
         for j, url in enumerate(image_urls, start=1):
-            # Skip data: URIs (SVG icons, inline images, etc.) which are not real files
             if url.startswith("data:"):
                 print(f"[DEBUG] Skipping inline image data URI for post {i}")
                 continue
@@ -346,6 +264,7 @@ def download_images_for_posts(
             except Exception as e:
                 print(f"[DEBUG] Exception downloading image {url}: {e}")
                 continue
+
         post["image_paths"] = ";".join(local_paths)
 
 
@@ -370,39 +289,24 @@ def save_posts_to_csv(posts: List[Dict[str, str]], out_path: Path) -> None:
             )
 
 
-def _extract_group_id_or_slug(group_input: str) -> str:
-    """
-    Extract numeric ID or slug from a group URL or return the input as-is.
-    """
-    gid = group_input.strip()
-    if "facebook.com" in gid and "/groups/" in gid:
-        tail = gid.split("/groups/", 1)[1]
-        for sep in ("?", "#", "/"):
-            if sep in tail:
-                tail = tail.split(sep, 1)[0]
-        gid = tail
-    return gid
-
-
-def selenium_collect_posts(
-    group_input: str,
-    keyword: str,
-    max_posts: int,
+def selenium_collect_single_post(
+    post_input: str,
     cookies: Optional[List[Dict[str, str]]] = None,
-    only_sl_phones: bool = False,
 ) -> List[Dict[str, str]]:
     """
-    Core Selenium scraping routine (no GUI, no CSV). Returns a list of post dicts:
+    Open a single Facebook post URL and extract:
     - post_url
     - post_text
-    - image_urls (list)
-    """
-    keyword = (keyword or "").strip().lower()
-    group_url = normalize_group_url(group_input)
-    gid = _extract_group_id_or_slug(group_input)
+    - image_urls
 
-    print(f"[INFO] Normalized group URL: {group_url}")
-    print(f"[INFO] Using group identifier for parsing: {gid}")
+    This is the ONLY scraping mode now (no groups, no keyword filters).
+    """
+    post_url = (post_input or "").strip()
+    if not post_url:
+        print("[INFO] Empty post URL given.")
+        return []
+
+    print(f"[INFO] Opening Facebook post URL: {post_url}")
 
     chrome_options = Options()
     chrome_options.add_argument("--start-maximized")
@@ -416,118 +320,474 @@ def selenium_collect_posts(
     try:
         if cookies:
             attach_cookies(driver, cookies)
-            driver.get(group_url)
+            driver.get(post_url)
             print("[INFO] Browser opened with your cookies applied.")
         else:
             print("[INFO] No cookies provided. A browser window will open.")
-            driver.get(group_url)
-            # Facebook may redirect to login; user must log in and then open the group page.
+            driver.get(post_url)
 
-        print(
-            "[INFO] Please log in to Facebook in the opened browser (if not already), "
-            "then navigate to the group page. The scraper will start automatically once "
-            "it detects a group URL, or after a timeout."
-        )
+        # Give the page some time to fully load.
+        time.sleep(8)
 
-        # Wait (up to ~5 minutes) for the user to log in and open the group page.
-        max_wait_seconds = 300
-        start_wait = time.time()
-        while time.time() - start_wait < max_wait_seconds:
-            try:
-                current_url = driver.current_url
-            except Exception:
-                current_url = ""
-            if "/groups/" in (current_url or ""):
-                break
-            time.sleep(3)
+        post = extract_single_post_from_dom(driver)
+        if not post:
+            print("[INFO] No post content found on the page.")
+            return []
 
-        time.sleep(5)
+        # Force URL to the exact URL that user supplied.
+        post["post_url"] = post_url
 
-        print("[INFO] Scrolling and collecting posts via Selenium...")
-        collected: List[Dict[str, str]] = []
-        seen_urls = set()
-        last_height = driver.execute_script("return document.body.scrollHeight")
-        actions = ActionChains(driver)
-
-        for scroll_idx in range(25):
-            posts = extract_posts_from_dom(driver, gid)
-
-            for p in posts:
-                url = p["post_url"]
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
-
-                text_lower = p["post_text"].lower()
-                html_lower = (p.get("html") or "").lower()
-
-                # Sri Lankan phone filter first (if enabled)
-                if only_sl_phones and not (contains_sl_phone(text_lower) or contains_sl_phone(html_lower)):
-                    continue
-
-                # Keyword filter (if provided)
-                if keyword and (keyword not in text_lower and keyword not in html_lower):
-                    continue
-
-                collected.append(p)
-                print(f"[DEBUG] Collected post #{len(collected)}: {url}")
-
-                if len(collected) >= max_posts:
-                    break
-
-            if len(collected) >= max_posts:
-                break
-
-            # Human-like scroll: move mouse randomly, then scroll
-            try:
-                actions.move_by_offset(
-                    random.randint(-50, 50), random.randint(-30, 30)
-                ).perform()
-            except Exception:
-                pass
-
-            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.END)
-
-            # Dynamic delay between scrolls
-            pause = compute_dynamic_delay(scroll_idx, base=2.5)
-            time.sleep(pause)
-
-            new_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height == last_height:
-                print("[INFO] Reached bottom of page or no new content.")
-                break
-            last_height = new_height
-
-        print(f"[INFO] Finished. Collected {len(collected)} post(s) matching filter.")
-        return collected
+        print("[INFO] Single post content extracted successfully.")
+        return [post]
 
     finally:
         driver.quit()
 
 
 def main():
-    print("=== Selenium Facebook Group Scraper (experimental) ===")
+    print("=== Selenium Facebook Single Post Scraper ===")
+    print("Paste an exact Facebook POST or SHARE URL.")
+    print()
 
-    group_input = input("Enter Facebook group URL or ID: ").strip()
-    keyword = input("Enter keyword to filter by (leave empty for all): ").strip()
-    max_posts_str = input("Max posts to save (default 50): ").strip() or "50"
+    post_input = input("Enter Facebook post URL: ").strip()
     cookies_path_str = input(
-        "Path to cookies.txt (recommended, enter to skip): "
+        "Path to cookies.txt (recommended, Enter to skip): "
     ).strip()
-    sl_only_str = input(
-        "Only posts with Sri Lankan phone number? (y/N): "
-    ).strip().lower()
+
+    cookies: List[Dict[str, str]] = []
+    if cookies_path_str:
+        cookies_path = Path(cookies_path_str)
+        if not cookies_path.is_file():
+            print(f"Cookies file not found: {cookies_path}")
+            input("Press Enter to exit...")
+            return
+        cookies = load_netscape_cookies(cookies_path)
+        print(f"[INFO] Loaded {len(cookies)} cookies from {cookies_path}")
+
+    posts = selenium_collect_single_post(
+        post_input=post_input,
+        cookies=cookies or None,
+    )
+
+    if not posts:
+        print("[INFO] No post content extracted, nothing to save.")
+        try:
+            input("Press Enter to exit...")
+        except EOFError:
+            pass
+        return
+
+    download_images_for_posts(posts, cookies=cookies or None)
+
+    script_dir = Path(__file__).resolve().parent
+    out_path = script_dir / "fb_post_selenium.csv"
+
+    save_posts_to_csv(posts, out_path)
+    print(f"[INFO] Saved result to {out_path}")
+    print(f"[INFO] Images (if any) are in: {script_dir / 'fb_images'}")
+    print(f"[INFO] You can open this folder in Explorer: {script_dir}")
 
     try:
-        max_posts = int(max_posts_str)
-        if max_posts <= 0:
-            raise ValueError
-    except ValueError:
-        print("Invalid max posts, using 50.")
-        max_posts = 50
+        input("Scrape finished. Press Enter to close this window...")
+    except EOFError:
+        pass
+
+
+# ------------------ Simple Tkinter GUI wrapper (single post only) ------------------ #
+
+try:
+    import threading
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+except ImportError:
+    tk = None  # UI will not be available
+
+
+class SinglePostScraperApp(tk.Tk):
+    """
+    GUI for scraping a SINGLE Facebook post URL.
+    - Fields:
+      * Post URL
+      * Cookies file
+    - Buttons:
+      * Start Scrape
+      * Reload Last Result
+      * Open Output Folder
+      * Close
+    - Table:
+      * Post URL
+      * Post Text (first 300 chars)
+      * Image Paths
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.title("Facebook Single Post Scraper")
+        self.geometry("900x600")
+        self.minsize(800, 450)
+
+        self.post_var = tk.StringVar()
+        self.cookies_var = tk.StringVar()
+        self.status_var = tk.StringVar(value="Idle")
+
+        self.data: List[Dict[str, str]] = []
+
+        self._build_ui()
+
+        try:
+            style = ttk.Style(self)
+            for candidate in ("clam", "vista", "default"):
+                if candidate in style.theme_names():
+                    style.theme_use(candidate)
+                    break
+        except Exception:
+            pass
+
+    def _build_ui(self):
+        top = ttk.Frame(self, padding=10)
+        top.pack(side=tk.TOP, fill=tk.X)
+
+        ttk.Label(top, text="Post URL:").grid(
+            row=0, column=0, sticky="e", padx=5, pady=4
+        )
+        ttk.Entry(top, textvariable=self.post_var, width=60).grid(
+            row=0, column=1, columnspan=3, sticky="we", pady=4
+        )
+
+        ttk.Label(top, text="Cookies file (cookies.txt):").grid(
+            row=1, column=0, sticky="e", padx=5, pady=4
+        )
+        ttk.Entry(top, textvariable=self.cookies_var, width=45).grid(
+            row=1, column=1, sticky="we", pady=4
+        )
+        ttk.Button(top, text="Browse...", command=self._on_browse_cookies).grid(
+            row=1, column=2, sticky="w", padx=5, pady=4
+        )
+
+        ttk.Button(top, text="Start Scrape", command=self._on_start).grid(
+            row=2, column=1, sticky="e", padx=5, pady=6
+        )
+        ttk.Button(top, text="Reload Result", command=self._on_reload_results).grid(
+            row=2, column=2, sticky="w", padx=5, pady=6
+        )
+        ttk.Button(top, text="Open Output Folder", command=self._on_open_output).grid(
+            row=2, column=3, sticky="w", padx=5, pady=6
+        )
+
+        for i in range(4):
+            top.columnconfigure(i, weight=1)
+
+        status_frame = ttk.Frame(self, padding=(10, 0))
+        status_frame.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(status_frame, textvariable=self.status_var).pack(
+            side=tk.LEFT, anchor="w"
+        )
+
+        self.progress = ttk.Progressbar(
+            status_frame,
+            mode="indeterminate",
+            length=200,
+        )
+        self.progress.pack(side=tk.RIGHT, padx=(5, 0), anchor="e")
+
+        table_frame = ttk.Frame(self, padding=10)
+        table_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        columns = ("post_url", "post_text", "image_paths")
+        self.tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+        )
+        self.tree.heading("post_url", text="Post URL")
+        self.tree.heading("post_text", text="Post Text (first 300 chars)")
+        self.tree.heading("image_paths", text="Image Paths")
+
+        self.tree.column("post_url", width=260, anchor="w")
+        self.tree.column("post_text", width=360, anchor="w")
+        self.tree.column("image_paths", width=260, anchor="w")
+
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="we")
+
+        self.tree.bind("<Double-1>", self._on_open_selected_post)
+
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+
+        bottom = ttk.Frame(self, padding=10)
+        bottom.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(bottom, text="Close", command=self.destroy).pack(
+            side=tk.RIGHT, padx=5
+        )
+
+    def _set_status(self, text: str):
+        self.status_var.set(text)
+        self.update_idletasks()
+
+    def _start_progress(self):
+        try:
+            self.progress.start(10)
+        except Exception:
+            pass
+
+    def _stop_progress(self):
+        try:
+            self.progress.stop()
+            self.progress["value"] = 0
+        except Exception:
+            pass
+
+    def _on_browse_cookies(self):
+        path = filedialog.askopenfilename(
+            title="Select cookies.txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if path:
+            self.cookies_var.set(path)
+
+    def _on_start(self):
+        post_input = self.post_var.get().strip()
+        cookies_path_str = self.cookies_var.get().strip()
+
+        if not post_input:
+            messagebox.showerror("Error", "Please enter a Facebook post URL.")
+            return
+
+        cookies: List[Dict[str, str]] = []
+        if cookies_path_str:
+            cookies_path = Path(cookies_path_str)
+            if not cookies_path.is_file():
+                messagebox.showerror("Error", "Cookies file not found.")
+                return
+            try:
+                cookies = load_netscape_cookies(cookies_path)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load cookies: {e}")
+                return
+
+        self._set_status("Running… please watch the browser window and console.")
+        self._start_progress()
+        t = threading.Thread(
+            target=self._run_scrape_thread,
+            args=(post_input, cookies),
+            daemon=True,
+        )
+        t.start()
+
+    def _run_scrape_thread(
+        self,
+        post_input: str,
+        cookies: List[Dict[str, str]],
+    ):
+        try:
+            posts = selenium_collect_single_post(
+                post_input=post_input,
+                cookies=cookies or None,
+            )
+            if not posts:
+                self.after(
+                    0,
+                    lambda: (
+                        self._stop_progress(),
+                        self._set_status("Done. No post content detected."),
+                        messagebox.showinfo(
+                            "Scrape finished",
+                            "No post content could be extracted from this URL.",
+                        ),
+                    ),
+                )
+                return
+
+            download_images_for_posts(posts, cookies=cookies or None)
+
+            script_dir = Path(__file__).resolve().parent
+            out_path = script_dir / "fb_post_selenium.csv"
+
+            save_posts_to_csv(posts, out_path)
+            self.data = posts
+
+            def update_ui():
+                self._populate_table()
+                self._stop_progress()
+
+                csv_path = out_path
+                images_path = script_dir / "fb_images"
+
+                self._set_status(
+                    f"Done. Extracted post content. Data saved to {csv_path.name}."
+                )
+                try:
+                    messagebox.showinfo(
+                        "Scrape finished",
+                        f"Post content saved to:\n{csv_path}\n\n"
+                        f"Images (if any) are in:\n{images_path}\n\n"
+                        "You can double-click the row to open the post in your browser.",
+                    )
+                except Exception:
+                    pass
+
+            self.after(0, update_ui)
+        except Exception as e:
+            error_message = str(e)
+            self.after(
+                0,
+                lambda msg=error_message: (
+                    self._stop_progress(),
+                    self._set_status("Error during scrape."),
+                    messagebox.showerror("Error", msg),
+                ),
+            )
+
+    def _populate_table(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+
+        for p in self.data:
+            post_url = p.get("post_url", "")
+            text = (p.get("post_text", "") or "").replace("\n", " ")
+            short_text = text[:300]
+            image_paths = p.get("image_paths", "")
+            self.tree.insert(
+                "",
+                "end",
+                values=(post_url, short_text, image_paths),
+            )
+
+    def _on_reload_results(self):
+        script_dir = Path(__file__).resolve().parent
+        path = script_dir / "fb_post_selenium.csv"
+        if not path.is_file():
+            messagebox.showinfo(
+                "Info",
+                f"{path.name} not found in:\n{script_dir}",
+            )
+            return
+
+        try:
+            data: List[Dict[str, str]] = []
+            with path.open("r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    data.append(row)
+            self.data = data
+            self._populate_table()
+            self._set_status(
+                f"Reloaded {len(data)} row(s) from fb_post_selenium.csv."
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to reload CSV: {e}")
+
+    def _on_open_output(self):
+        script_dir = Path(__file__).resolve().parent
+        folder = script_dir
+
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(folder))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                os.system(f'open "{folder}"')
+            else:
+                os.system(f'xdg-open "{folder}"')
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open folder: {e}")
+
+    def _on_open_selected_post(self, event):
+        selection = self.tree.selection()
+        if not selection:
+            return
+        item_id = selection[0]
+        values = self.tree.item(item_id, "values")
+        if not values:
+            return
+        post_url = values[0]
+        if not post_url:
+            return
+        try:
+            webbrowser.open(post_url)
+        except Exception:
+            messagebox.showerror("Error", "Could not open the post URL in browser.")
+
+
+def run_selenium_scrape(
+    post_input: str,
+    cookies_path_str: str,
+):
+    """
+    Non-interactive helper: scrape a single post, save CSV and images.
+    """
+    cookies: List[Dict[str, str]] = []
+    if cookies_path_str:
+        cookies_path = Path(cookies_path_str)
+        if not cookies_path.is_file():
+            raise FileNotFoundError(f"Cookies file not found: {cookies_path}")
+        cookies = load_netscape_cookies(cookies_path)
+        print(f"[INFO] Loaded {len(cookies)} cookies from {cookies_path}")
+
+    posts = selenium_collect_single_post(
+        post_input=post_input,
+        cookies=cookies or None,
+    )
+    if not posts:
+        print("[INFO] No post content extracted, nothing to save.")
+        return
+
+    download_images_for_posts(posts, cookies=cookies or None)
+
+    script_dir = Path(__file__).resolve().parent
+    out_path = script_dir / "fb_post_selenium.csv"
+
+    save_posts_to_csv(posts, out_path)
+    print(f"[INFO] Saved result to {out_path}")
+    print(f"[INFO] Images (if any) are in: {script_dir / 'fb_images'}")
+
+
+if __name__ == "__main__":
+    if tk is not None:
+        app = SinglePostScraperApp()
+        app.mainloop()
+    else:
+        main():
+    print("=== Selenium Facebook Scraper (experimental) ===")
+    print("You can enter either:")
+    print(" - A Facebook GROUP URL or ID  (to collect multiple posts), OR")
+    print(" - A Facebook POST URL        (to collect just that single post).")
+    print()
+
+    group_input = input("Enter Facebook group URL/ID or single post URL: ").strip()
+    is_single_post_mode = ("/posts/" in group_input) and ("/groups/" not in group_input)
+
+    keyword = ""
+    max_posts = 1
+    sl_only_str = "n"
+
+    if not is_single_post_mode:
+        # Group mode: ask for filters and limits
+        keyword = input("Enter keyword to filter by (leave empty for all): ").strip()
+        max_posts_str = input("Max posts to save (default 50): ").strip() or "50"
+        sl_only_str = input(
+            "Only posts with Sri Lankan phone number? (y/N): "
+        ).strip().lower()
+
+        try:
+            max_posts = int(max_posts_str)
+            if max_posts <= 0:
+                raise ValueError
+        except ValueError:
+            print("Invalid max posts, using 50.")
+            max_posts = 50
 
     cookies_path = None
     cookies: List[Dict[str, str]] = []
+    cookies_path_str = input(
+        "Path to cookies.txt (recommended, enter to skip): "
+    ).strip()
     if cookies_path_str:
         cookies_path = Path(cookies_path_str)
         if not cookies_path.is_file():
@@ -539,13 +799,19 @@ def main():
 
     only_sl = sl_only_str in {"y", "yes"}
 
-    collected = selenium_collect_posts(
-        group_input=group_input,
-        keyword=keyword,
-        max_posts=max_posts,
-        cookies=cookies or None,
-        only_sl_phones=only_sl,
-    )
+    if is_single_post_mode:
+        collected = selenium_collect_single_post(
+            post_input=group_input,
+            cookies=cookies or None,
+        )
+    else:
+        collected = selenium_collect_posts(
+            group_input=group_input,
+            keyword=keyword,
+            max_posts=max_posts,
+            cookies=cookies or None,
+            only_sl_phones=only_sl,
+        )
 
     if not collected:
         print("[INFO] No posts collected, nothing to save.")
@@ -585,8 +851,11 @@ except ImportError:
 class AdvancedSeleniumScraperApp(tk.Tk):
     """
     Advanced GUI:
-    - Inputs at the top (Group URL/ID, Keyword, Max posts, Cookies file)
-    - Checkbox: Only posts with Sri Lankan phone number
+    - You can scrape either:
+      * Multiple posts from a Facebook GROUP (URL/ID), or
+      * A single Facebook POST (direct post URL)
+    - Inputs at the top (Group/Post URL, optional Keyword & Max posts for groups, Cookies file)
+    - Checkbox: Only posts with Sri Lankan phone number (group mode only)
     - Buttons: Start Scrape, Open Output Folder, Reload Results, Close
     - Results table with columns: Post URL, Post Text, Image Paths
     - Status line and progress bar at the top of the main area
@@ -595,7 +864,7 @@ class AdvancedSeleniumScraperApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Facebook Group Selenium Scraper (Advanced)")
+        self.title("Facebook Selenium Scraper (Group or Single Post)")
         self.geometry("950x620")
         self.minsize(850, 500)
 
@@ -627,7 +896,7 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         top = ttk.Frame(self, padding=10)
         top.pack(side=tk.TOP, fill=tk.X)
 
-        ttk.Label(top, text="Group URL / ID:").grid(
+        ttk.Label(top, text="Group / Post URL:").grid(
             row=0, column=0, sticky="e", padx=5, pady=4
         )
         ttk.Entry(top, textvariable=self.group_var, width=60).grid(
@@ -764,8 +1033,10 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         only_sl = self.only_sl_var.get()
 
         if not group_input:
-            messagebox.showerror("Error", "Please enter a group URL or ID.")
+            messagebox.showerror("Error", "Please enter a group or post URL.")
             return
+
+        is_single_post_mode = ("/posts/" in group_input) and ("/groups/" not in group_input)
 
         try:
             max_posts = int(max_posts_str)
@@ -791,7 +1062,7 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         self._start_progress()
         t = threading.Thread(
             target=self._run_scrape_thread,
-            args=(group_input, keyword, max_posts, cookies, only_sl),
+            args=(group_input, keyword, max_posts, cookies, only_sl, is_single_post_mode),
             daemon=True,
         )
         t.start()
@@ -803,15 +1074,23 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         max_posts: int,
         cookies: List[Dict[str, str]],
         only_sl: bool,
+        is_single_post_mode: bool,
     ):
         try:
-            posts = selenium_collect_posts(
-                group_input=group_input,
-                keyword=keyword,
-                max_posts=max_posts,
-                cookies=cookies or None,
-                only_sl_phones=only_sl,
-            )
+            if is_single_post_mode:
+                posts = selenium_collect_single_post(
+                    post_input=group_input,
+                    cookies=cookies or None,
+                )
+            else:
+                posts = selenium_collect_posts(
+                    group_input=group_input,
+                    keyword=keyword,
+                    max_posts=max_posts,
+                    cookies=cookies or None,
+                    only_sl_phones=only_sl,
+                )
+
             if not posts:
                 self.after(
                     0,
@@ -948,7 +1227,7 @@ class AdvancedSeleniumScraperApp(tk.Tk):
 
 
 def run_selenium_scrape(
-    group_input: str,
+    fb_input: str,
     keyword: str,
     max_posts: int,
     cookies_path_str: str,
@@ -956,7 +1235,10 @@ def run_selenium_scrape(
 ):
     """
     Non-interactive wrapper usable from external code (kept for compatibility).
-    It mirrors the CLI but does not show any GUI; outputs CSV and images.
+
+    - If fb_input looks like a single POST URL (contains "/posts/" but not "/groups/"),
+      it will scrape just that post (no keyword / phone filters).
+    - Otherwise, it behaves like the legacy group scraper.
     """
     cookies: List[Dict[str, str]] = []
     if cookies_path_str:
@@ -966,13 +1248,21 @@ def run_selenium_scrape(
         cookies = load_netscape_cookies(cookies_path)
         print(f"[INFO] Loaded {len(cookies)} cookies from {cookies_path}")
 
-    posts = selenium_collect_posts(
-        group_input=group_input,
-        keyword=keyword,
-        max_posts=max_posts,
-        cookies=cookies or None,
-        only_sl_phones=only_sl_phones,
-    )
+    is_single_post_mode = ("/posts/" in fb_input) and ("/groups/" not in fb_input)
+
+    if is_single_post_mode:
+        posts = selenium_collect_single_post(
+            post_input=fb_input,
+            cookies=cookies or None,
+        )
+    else:
+        posts = selenium_collect_posts(
+            group_input=fb_input,
+            keyword=keyword,
+            max_posts=max_posts,
+            cookies=cookies or None,
+            only_sl_phones=only_sl_phones,
+        )
     if not posts:
         print("[INFO] No posts collected, nothing to save.")
         return
