@@ -129,18 +129,25 @@ def extract_posts_from_dom(
     """
     Extract posts from the live DOM using Selenium.
 
-    We try to be robust to Facebook layout changes:
+    Strategy overview:
 
     - First, find all elements with role="article" anywhere on the page.
     - For each article, try several strategies to locate a canonical post link:
       1. A link containing "/groups/<group_id_or_slug>/posts/" or "/permalink/"
       2. Any link containing "/groups/" and "/posts/"
       3. As a final fallback, any link containing "/posts/"
-    - We then collect:
-      - post_url
-      - post_text (visible text of the article)
-      - html (innerHTML of the article, used as a fallback for phone detection)
-      - image_urls (all <img> src values within the article, plus fbcdn URLs in HTML)
+    - Then, for each article we collect:
+      - post_url: URL of the post
+      - post_text: visible text of the article
+      - html: innerHTML of the article (for fallback phone/keyword detection)
+      - image_urls: image URLs that belong to the post media
+
+    To make image detection more precise, we:
+      - Prefer images that are inside anchors whose href looks like a photo link
+        (containing "photo/?fbid=" or "/photos/").
+      - Otherwise, fall back to <img> tags whose src is a Facebook CDN URL
+        (fbcdn.net / scontent-*.xx.fbcdn.net), ignoring icons and inline data: URIs.
+      - As a last resort, scan the raw HTML with FB_IMAGE_URL_REGEX.
     """
     posts: List[Dict[str, str]] = []
 
@@ -149,6 +156,141 @@ def extract_posts_from_dom(
     except Exception as e:
         print(f"[DEBUG] Failed to locate post containers: {e}")
         return posts
+
+    print(f"[DEBUG] Found {len(articles)} candidate article elements on the page.")
+
+    gid = (group_id_or_slug or "").strip()
+
+    for idx, art in enumerate(articles, start=1):
+        href = ""
+        link_el = None
+
+        # Strategy 1: explicit group id/slug in the URL
+        if gid:
+            try:
+                xpath = (
+                    ".//a[contains(@href, '/groups/"
+                    + gid
+                    + "/posts/') or contains(@href, '/groups/"
+                    + gid
+                    + "/permalink/')]"
+                )
+                link_el = art.find_element(By.XPATH, xpath)
+            except Exception:
+                link_el = None
+
+        # Strategy 2: generic groups + posts pattern
+        if link_el is None:
+            try:
+                link_el = art.find_element(
+                    By.XPATH,
+                    ".//a[contains(@href, '/groups/') and contains(@href, '/posts/')]",
+                )
+            except Exception:
+                link_el = None
+
+        # Strategy 3: any link with "/posts/"
+        if link_el is None:
+            try:
+                link_el = art.find_element(By.XPATH, ".//a[contains(@href, '/posts/')]")
+            except Exception:
+                link_el = None
+
+        if link_el is None:
+            snippet = (art.text or "").replace("\n", " ")[:80]
+            print(f"[DEBUG] Article #{idx}: no post link found. Snippet='{snippet}'")
+            continue
+
+        href = link_el.get_attribute("href") or ""
+        if not href:
+            continue
+
+        text = art.text or ""
+        html = ""
+        try:
+            html = art.get_attribute("innerHTML") or ""
+        except Exception:
+            html = ""
+
+        # If Selenium's .text is empty (common with some FB layouts), try to
+        # derive a plain-text snippet from the raw HTML so the CSV has content.
+        if not text and html:
+            # Strip tags with a simple regex-based approach
+            rough = re.sub(r"<[^>]+>", " ", html)
+            # Collapse whitespace
+            rough = " ".join(rough.split())
+            text = rough
+
+        image_urls: List[str] = []
+
+        # 1) Strong signal: images inside "photo" anchors (these are the main post photos)
+        try:
+            photo_anchors = art.find_elements(
+                By.XPATH,
+                ".//a[contains(@href, 'photo/?fbid=') or contains(@href, '/photos/')]",
+            )
+            for a in photo_anchors:
+                imgs = a.find_elements(By.XPATH, ".//img")
+                for img in imgs:
+                    src = img.get_attribute("src") or ""
+                    if not src:
+                        continue
+                    if src.startswith("data:"):
+                        # Skip inline data; real media come from fbcdn/scontent.
+                        continue
+                    if "fbcdn.net" not in src and "scontent-" not in src:
+                        # Most FB media are served from these hosts; this filters
+                        # out small UI icons where possible.
+                        continue
+                    if src not in image_urls:
+                        image_urls.append(src)
+        except Exception:
+            pass
+
+        # 2) Fallback: other <img> tags that look like real photo media (fbcdn / scontent)
+        if not image_urls:
+            try:
+                img_elements = art.find_elements(By.XPATH, ".//img")
+                for img in img_elements:
+                    src = img.get_attribute("src") or ""
+                    if not src:
+                        continue
+                    if src.startswith("data:"):
+                        continue
+                    if "fbcdn.net" not in src and "scontent-" not in src:
+                        continue
+                    if src not in image_urls:
+                        image_urls.append(src)
+            except Exception:
+                pass
+
+        # 3) Final fallback: scan raw HTML for any direct image URLs (fbcdn, scontent, etc.).
+        if html:
+            for match in FB_IMAGE_URL_REGEX.findall(html):
+                clean_url = html_lib.unescape(match)
+                if "fbcdn.net" not in clean_url and "scontent-" not in clean_url:
+                    continue
+                if clean_url not in image_urls:
+                    image_urls.append(clean_url)
+
+        if not image_urls:
+            snippet = (text or "").replace("\n", " ")[:80]
+            print(
+                f"[DEBUG] Article #{idx}: no image URLs found. "
+                f"text_snippet='{snippet}', html_len={len(html)}"
+            )
+
+        posts.append(
+            {
+                "post_url": href,
+                "post_text": text[:4000],
+                "html": html,
+                "image_urls": image_urls,
+            }
+        )
+
+    print(f"[DEBUG] extract_posts_from_dom: returning {len(posts)} post(s).")
+    return posts
 
     print(f"[DEBUG] Found {len(articles)} candidate article elements on the page.")
 
