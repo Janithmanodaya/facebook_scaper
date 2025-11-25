@@ -216,11 +216,12 @@ def extract_posts_from_dom(
 
         image_urls: List[str] = []
         try:
-            # 1) Regula <=img> tags
+            # 1) Regular &lt;img&gt; tags
             img_elements = art.find_elements(By.XPATH, ".//img")
             for img in img_elements:
                 src = img.get_attribute("src") or ""
-               tinue
+                if not src:
+                    continue
                 if src.startswith("data:"):
                     # Skip inline SVG/icons here; we'll look for real media URLs below.
                     continue
@@ -316,13 +317,13 @@ def download_images_for_posts(
         image_urls = post.get("image_urls") or []
         local_paths: List[str] = []
 
+        post_url = post.get("post_url", "https://www.facebook.com/")
+
         if not image_urls:
             print(
-                f"[DEBUG] Post #{i} ({post.get('post_url','')}) has no image URLs "
+                f"[DEBUG] Post #{i} ({post_url}) has no image URLs "
                 f"to download."
-            )
-            post["image_paths"]//www.facebook.com/"
-        headers = dict(headers_base)
+                   headers = dict(headers_base)
         headers["Referer"] = post_url
 
         for j, url in enumerate(image_urls, start=1):
