@@ -216,11 +216,12 @@ def extract_posts_from_dom(
 
         image_urls: List[str] = []
         try:
-            # 1) Regula <=img> tags
+            # 1) Regular &lt;img&gt; tags
             img_elements = art.find_elements(By.XPATH, ".//img")
             for img in img_elements:
                 src = img.get_attribute("src") or ""
-               tinue
+                if not src:
+                    continue
                 if src.startswith("data:"):
                     # Skip inline SVG/icons here; we'll look for real media URLs below.
                     continue
@@ -321,7 +322,10 @@ def download_images_for_posts(
                 f"[DEBUG] Post #{i} ({post.get('post_url','')}) has no image URLs "
                 f"to download."
             )
-            post["image_paths"]//www.facebook.com/"
+            post["image_paths"] = ""
+            continue
+
+        post_url = post.get("post_url", "") or "https://www.facebook.com/"
         headers = dict(headers_base)
         headers["Referer"] = post_url
 
@@ -382,6 +386,64 @@ def _extract_group_id_or_slug(group_input: str) -> str:
                 tail = tail.split(sep, 1)[0]
         gid = tail
     return gid
+
+
+def selenium_collect_single_post(
+    post_input: str,
+    cookies: Optional[List[Dict[str, str]]] = None,
+) -> List[Dict[str, str]]:
+    """
+    Open a single Facebook post URL and extract:
+    - post_url
+    - post_text
+    - image_urls
+
+    This uses Selenium but does not perform any scrolling or keyword filtering.
+    """
+    post_url = (post_input or "").strip()
+    if not post_url:
+        print("[INFO] Empty post URL given.")
+        return []
+
+    print(f"[INFO] Opening single post URL: {post_url}")
+
+    chrome_options = Options()
+    chrome_options.add_argument("--start-maximized")
+    chrome_options.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+
+    driver = webdriver.Chrome(options=chrome_options)
+
+    try:
+        if cookies:
+            attach_cookies(driver, cookies)
+            driver.get(post_url)
+            print("[INFO] Browser opened with your cookies applied.")
+        else:
+            print("[INFO] No cookies provided. A browser window will open.")
+            driver.get(post_url)
+
+        # Give the page some time to fully load.
+        time.sleep(8)
+
+        posts = extract_posts_from_dom(driver, group_id_or_slug="")
+        if not posts:
+            print("[INFO] No post content found on the page.")
+            return []
+
+        # For a single post URL, we expect the first article element to be the post.
+        post = posts[0]
+
+        # Ensure the URL we save is exactly the URL the user provided (for clarity).
+        post["post_url"] = post_url
+
+        print("[INFO] Single post content extracted successfully.")
+        return [post]
+
+    finally:
+        driver.quit()
 
 
 def selenium_collect_posts(
@@ -506,28 +568,40 @@ def selenium_collect_posts(
 
 
 def main():
-    print("=== Selenium Facebook Group Scraper (experimental) ===")
+    print("=== Selenium Facebook Scraper (experimental) ===")
+    print("You can enter either:")
+    print(" - A Facebook GROUP URL or ID  (to collect multiple posts), OR")
+    print(" - A Facebook POST URL        (to collect just that single post).")
+    print()
 
-    group_input = input("Enter Facebook group URL or ID: ").strip()
-    keyword = input("Enter keyword to filter by (leave empty for all): ").strip()
-    max_posts_str = input("Max posts to save (default 50): ").strip() or "50"
-    cookies_path_str = input(
-        "Path to cookies.txt (recommended, enter to skip): "
-    ).strip()
-    sl_only_str = input(
-        "Only posts with Sri Lankan phone number? (y/N): "
-    ).strip().lower()
+    group_input = input("Enter Facebook group URL/ID or single post URL: ").strip()
+    is_single_post_mode = ("/posts/" in group_input) and ("/groups/" not in group_input)
 
-    try:
-        max_posts = int(max_posts_str)
-        if max_posts <= 0:
-            raise ValueError
-    except ValueError:
-        print("Invalid max posts, using 50.")
-        max_posts = 50
+    keyword = ""
+    max_posts = 1
+    sl_only_str = "n"
+
+    if not is_single_post_mode:
+        # Group mode: ask for filters and limits
+        keyword = input("Enter keyword to filter by (leave empty for all): ").strip()
+        max_posts_str = input("Max posts to save (default 50): ").strip() or "50"
+        sl_only_str = input(
+            "Only posts with Sri Lankan phone number? (y/N): "
+        ).strip().lower()
+
+        try:
+            max_posts = int(max_posts_str)
+            if max_posts <= 0:
+                raise ValueError
+        except ValueError:
+            print("Invalid max posts, using 50.")
+            max_posts = 50
 
     cookies_path = None
     cookies: List[Dict[str, str]] = []
+    cookies_path_str = input(
+        "Path to cookies.txt (recommended, enter to skip): "
+    ).strip()
     if cookies_path_str:
         cookies_path = Path(cookies_path_str)
         if not cookies_path.is_file():
@@ -539,13 +613,19 @@ def main():
 
     only_sl = sl_only_str in {"y", "yes"}
 
-    collected = selenium_collect_posts(
-        group_input=group_input,
-        keyword=keyword,
-        max_posts=max_posts,
-        cookies=cookies or None,
-        only_sl_phones=only_sl,
-    )
+    if is_single_post_mode:
+        collected = selenium_collect_single_post(
+            post_input=group_input,
+            cookies=cookies or None,
+        )
+    else:
+        collected = selenium_collect_posts(
+            group_input=group_input,
+            keyword=keyword,
+            max_posts=max_posts,
+            cookies=cookies or None,
+            only_sl_phones=only_sl,
+        )
 
     if not collected:
         print("[INFO] No posts collected, nothing to save.")
@@ -585,8 +665,11 @@ except ImportError:
 class AdvancedSeleniumScraperApp(tk.Tk):
     """
     Advanced GUI:
-    - Inputs at the top (Group URL/ID, Keyword, Max posts, Cookies file)
-    - Checkbox: Only posts with Sri Lankan phone number
+    - You can scrape either:
+      * Multiple posts from a Facebook GROUP (URL/ID), or
+      * A single Facebook POST (direct post URL)
+    - Inputs at the top (Group/Post URL, optional Keyword & Max posts for groups, Cookies file)
+    - Checkbox: Only posts with Sri Lankan phone number (group mode only)
     - Buttons: Start Scrape, Open Output Folder, Reload Results, Close
     - Results table with columns: Post URL, Post Text, Image Paths
     - Status line and progress bar at the top of the main area
@@ -595,7 +678,7 @@ class AdvancedSeleniumScraperApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Facebook Group Selenium Scraper (Advanced)")
+        self.title("Facebook Selenium Scraper (Group or Single Post)")
         self.geometry("950x620")
         self.minsize(850, 500)
 
@@ -627,7 +710,7 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         top = ttk.Frame(self, padding=10)
         top.pack(side=tk.TOP, fill=tk.X)
 
-        ttk.Label(top, text="Group URL / ID:").grid(
+        ttk.Label(top, text="Group / Post URL:").grid(
             row=0, column=0, sticky="e", padx=5, pady=4
         )
         ttk.Entry(top, textvariable=self.group_var, width=60).grid(
@@ -764,8 +847,10 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         only_sl = self.only_sl_var.get()
 
         if not group_input:
-            messagebox.showerror("Error", "Please enter a group URL or ID.")
+            messagebox.showerror("Error", "Please enter a group or post URL.")
             return
+
+        is_single_post_mode = ("/posts/" in group_input) and ("/groups/" not in group_input)
 
         try:
             max_posts = int(max_posts_str)
@@ -791,7 +876,7 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         self._start_progress()
         t = threading.Thread(
             target=self._run_scrape_thread,
-            args=(group_input, keyword, max_posts, cookies, only_sl),
+            args=(group_input, keyword, max_posts, cookies, only_sl, is_single_post_mode),
             daemon=True,
         )
         t.start()
@@ -803,15 +888,23 @@ class AdvancedSeleniumScraperApp(tk.Tk):
         max_posts: int,
         cookies: List[Dict[str, str]],
         only_sl: bool,
+        is_single_post_mode: bool,
     ):
         try:
-            posts = selenium_collect_posts(
-                group_input=group_input,
-                keyword=keyword,
-                max_posts=max_posts,
-                cookies=cookies or None,
-                only_sl_phones=only_sl,
-            )
+            if is_single_post_mode:
+                posts = selenium_collect_single_post(
+                    post_input=group_input,
+                    cookies=cookies or None,
+                )
+            else:
+                posts = selenium_collect_posts(
+                    group_input=group_input,
+                    keyword=keyword,
+                    max_posts=max_posts,
+                    cookies=cookies or None,
+                    only_sl_phones=only_sl,
+                )
+
             if not posts:
                 self.after(
                     0,
@@ -948,7 +1041,7 @@ class AdvancedSeleniumScraperApp(tk.Tk):
 
 
 def run_selenium_scrape(
-    group_input: str,
+    fb_input: str,
     keyword: str,
     max_posts: int,
     cookies_path_str: str,
@@ -956,7 +1049,10 @@ def run_selenium_scrape(
 ):
     """
     Non-interactive wrapper usable from external code (kept for compatibility).
-    It mirrors the CLI but does not show any GUI; outputs CSV and images.
+
+    - If fb_input looks like a single POST URL (contains "/posts/" but not "/groups/"),
+      it will scrape just that post (no keyword / phone filters).
+    - Otherwise, it behaves like the legacy group scraper.
     """
     cookies: List[Dict[str, str]] = []
     if cookies_path_str:
@@ -966,13 +1062,21 @@ def run_selenium_scrape(
         cookies = load_netscape_cookies(cookies_path)
         print(f"[INFO] Loaded {len(cookies)} cookies from {cookies_path}")
 
-    posts = selenium_collect_posts(
-        group_input=group_input,
-        keyword=keyword,
-        max_posts=max_posts,
-        cookies=cookies or None,
-        only_sl_phones=only_sl_phones,
-    )
+    is_single_post_mode = ("/posts/" in fb_input) and ("/groups/" not in fb_input)
+
+    if is_single_post_mode:
+        posts = selenium_collect_single_post(
+            post_input=fb_input,
+            cookies=cookies or None,
+        )
+    else:
+        posts = selenium_collect_posts(
+            group_input=fb_input,
+            keyword=keyword,
+            max_posts=max_posts,
+            cookies=cookies or None,
+            only_sl_phones=only_sl_phones,
+        )
     if not posts:
         print("[INFO] No posts collected, nothing to save.")
         return
