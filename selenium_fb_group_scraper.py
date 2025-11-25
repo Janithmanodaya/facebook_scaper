@@ -5,6 +5,7 @@ import re
 import sys
 import time
 import webbrowser
+import html as html_lib
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -20,8 +21,12 @@ SL_PHONE_REGEX = re.compile(r"(?:\+94\d{8,9}|0(?:3|7)\d{7,8})")
 # Facebook often embeds real image URLs inside HTML (e.g. scontent.xx.fbcdn.net)
 # and shows inline SVG icons as <img src="data:...">. We detect the real media URLs
 # via a relaxed regex so that we can download photos reliably.
+# NOTE: Facebook image URLs almost always include a query string with
+# security / cache parameters (e.g. ?_nc_cat=..., ?_nc_eui2=...).
+# If we cut the URL at ".jpg" or ".png", the request will usually fail
+# (HTTP 403 / 404). Therefore the regex keeps the optional query part.
 FB_IMAGE_URL_REGEX = re.compile(
-    r"https?://[^\"'\s]+?\.(?:jpg|jpeg|png|webp)",
+    r"https?://[^\"'\\s]+?\\.(?:jpg|jpeg|png|webp)(?:\\?[^\"'\\s]*)?",
     re.IGNORECASE,
 )
 
@@ -211,11 +216,11 @@ def extract_posts_from_dom(
 
         image_urls: List[str] = []
         try:
+            # 1) Regula <=img> tags
             img_elements = art.find_elements(By.XPATH, ".//img")
             for img in img_elements:
                 src = img.get_attribute("src") or ""
-                if not src:
-                    continue
+               tinue
                 if src.startswith("data:"):
                     # Skip inline SVG/icons here; we'll look for real media URLs below.
                     continue
@@ -225,10 +230,12 @@ def extract_posts_from_dom(
             pass
 
         # As a fallback, scan the HTML for any direct image URLs (fbcdn, scontent, etc.).
+        # We also unescape HTML entities (&amp; → &) to get a valid URL.
         if html:
             for match in FB_IMAGE_URL_REGEX.findall(html):
-                if match not in image_urls:
-                    image_urls.append(match)
+                clean_url = html_lib.unescape(match)
+                if clean_url not in image_urls:
+                    image_urls.append(clean_url)
 
         posts.append(
             {
@@ -309,9 +316,12 @@ def download_images_for_posts(
         image_urls = post.get("image_urls") or []
         local_paths: List[str] = []
 
-        # Use the post URL as Referer when downloading images. Facebook often
-        # returns HTTP 403 if there is no or an unexpected Referer header.
-        post_url = post.get("post_url", "") or "https://www.facebook.com/"
+        if not image_urls:
+            print(
+                f"[DEBUG] Post #{i} ({post.get('post_url','')}) has no image URLs "
+                f"to download."
+            )
+            post["image_paths"]//www.facebook.com/"
         headers = dict(headers_base)
         headers["Referer"] = post_url
 
