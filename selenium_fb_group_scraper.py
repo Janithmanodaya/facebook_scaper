@@ -26,6 +26,13 @@ except ImportError:
     print("    python -m pip install selenium")
     sys.exit(1)
 
+# GUI imports (optional)
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+except ImportError:
+    tk = None  # UI will not be available
+
 # Facebook image URL pattern (keep query string, do NOT cut at .jpg/.png)
 FB_IMAGE_URL_REGEX = re.compile(
     r"https?://[^\"'\s]+?\.(?:jpg|jpeg|png|webp)(?:\?[^\"'\s]*)?",
@@ -342,7 +349,7 @@ def run_single_post_scrape(
             pass
 
 
-def main():
+def main_cli():
     print("=== Facebook Single Post Scraper (headless) ===")
     post_url = input("Enter exact Facebook post URL: ").strip()
     cookies_path_str = input(
@@ -369,5 +376,251 @@ def main():
     print("Done.")
 
 
+class SinglePostScraperApp(tk.Tk):
+    """
+    Simple GUI for scraping a single Facebook post by exact URL.
+    - Input: Post URL, Cookies file (optional)
+    - Buttons: Start Scrape, Open Output Folder, Close
+    - Shows status and a small preview of description and image paths.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.title("Facebook Single Post Scraper")
+        self.geometry("820x420")
+        self.minsize(750, 380)
+
+        self.post_url_var = tk.StringVar()
+        self.cookies_var = tk.StringVar()
+        self.status_var = tk.StringVar(value="Idle")
+
+        self.post_data: Optional[Dict[str, object]] = None
+
+        self._build_ui()
+
+        try:
+            style = ttk.Style(self)
+            for candidate in ("clam", "vista", "default"):
+                if candidate in style.theme_names():
+                    style.theme_use(candidate)
+                    break
+        except Exception:
+            pass
+
+    def _build_ui(self):
+        top = ttk.Frame(self, padding=10)
+        top.pack(side=tk.TOP, fill=tk.X)
+
+        ttk.Label(top, text="Facebook Post URL:").grid(
+            row=0, column=0, sticky="e", padx=5, pady=4
+        )
+        ttk.Entry(top, textvariable=self.post_url_var, width=70).grid(
+            row=0, column=1, columnspan=2, sticky="we", pady=4
+        )
+
+        ttk.Label(top, text="Cookies file (cookies.txt, optional):").grid(
+            row=1, column=0, sticky="e", padx=5, pady=4
+        )
+        ttk.Entry(top, textvariable=self.cookies_var, width=50).grid(
+            row=1, column=1, sticky="we", pady=4
+        )
+        ttk.Button(top, text="Browse...", command=self._on_browse_cookies).grid(
+            row=1, column=2, sticky="w", padx=5, pady=4
+        )
+
+        ttk.Button(top, text="Start Scrape", command=self._on_start).grid(
+            row=2, column=1, sticky="e", padx=5, pady=8
+        )
+        ttk.Button(top, text="Open Output Folder", command=self._on_open_output).grid(
+            row=2, column=2, sticky="w", padx=5, pady=8
+        )
+
+        for i in range(3):
+            top.columnconfigure(i, weight=1)
+
+        status_frame = ttk.Frame(self, padding=(10, 0))
+        status_frame.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(status_frame, textvariable=self.status_var).pack(
+            side=tk.LEFT, anchor="w"
+        )
+
+        self.progress = ttk.Progressbar(
+            status_frame,
+            mode="indeterminate",
+            length=200,
+        )
+        self.progress.pack(side=tk.RIGHT, padx=(5, 0), anchor="e")
+
+        preview_frame = ttk.LabelFrame(self, text="Post Preview", padding=10)
+        preview_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        ttk.Label(preview_frame, text="URL:").grid(
+            row=0, column=0, sticky="nw", padx=5, pady=4
+        )
+        self.url_label = ttk.Label(preview_frame, text="", wraplength=650)
+        self.url_label.grid(row=0, column=1, sticky="w", padx=5, pady=4)
+
+        ttk.Label(preview_frame, text="Description:").grid(
+            row=1, column=0, sticky="nw", padx=5, pady=4
+        )
+        self.text_box = tk.Text(preview_frame, height=6, wrap="word")
+        self.text_box.grid(row=1, column=1, sticky="nsew", padx=5, pady=4)
+
+        ttk.Label(preview_frame, text="Image paths:").grid(
+            row=2, column=0, sticky="nw", padx=5, pady=4
+        )
+        self.images_box = tk.Text(preview_frame, height=4, wrap="word")
+        self.images_box.grid(row=2, column=1, sticky="nsew", padx=5, pady=4)
+
+        preview_frame.columnconfigure(1, weight=1)
+        preview_frame.rowconfigure(1, weight=1)
+
+        bottom = ttk.Frame(self, padding=10)
+        bottom.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(bottom, text="Close", command=self.destroy).pack(
+            side=tk.RIGHT, padx=5
+        )
+
+        self.text_box.configure(state="disabled")
+        self.images_box.configure(state="disabled")
+
+    def _set_status(self, text: str):
+        self.status_var.set(text)
+        self.update_idletasks()
+
+    def _start_progress(self):
+        try:
+            self.progress.start(10)
+        except Exception:
+            pass
+
+    def _stop_progress(self):
+        try:
+            self.progress.stop()
+            self.progress["value"] = 0
+        except Exception:
+            pass
+
+    def _on_browse_cookies(self):
+        path = filedialog.askopenfilename(
+            title="Select cookies.txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if path:
+            self.cookies_var.set(path)
+
+    def _on_start(self):
+        post_url = self.post_url_var.get().strip()
+        cookies_path_str = self.cookies_var.get().strip()
+
+        if not post_url:
+            messagebox.showerror("Error", "Please enter a Facebook post URL.")
+            return
+
+        self._set_status("Scraping… (headless browser, please wait)")
+        self._start_progress()
+
+        t = threading.Thread(
+            target=self._run_scrape_thread,
+            args=(post_url, cookies_path_str),
+            daemon=True,
+        )
+        t.start()
+
+    def _run_scrape_thread(self, post_url: str, cookies_path_str: str):
+        try:
+            post = run_single_post_scrape(
+                post_url=post_url,
+                cookies_path_str=cookies_path_str,
+                headless=True,
+            )
+            if not post:
+                self.after(
+                    0,
+                    lambda: (
+                        self._stop_progress(),
+                        self._set_status("Done, but no data extracted."),
+                        messagebox.showinfo(
+                            "Finished",
+                            "Scraping finished but no data was extracted.\n"
+                            "Check the console for details.",
+                        ),
+                    ),
+                )
+                return
+
+            self.post_data = post
+
+            def update_ui():
+                self._populate_preview()
+                self._stop_progress()
+                self._set_status("Done.")
+                try:
+                    script_dir = Path(__file__).resolve().parent
+                    csv_path = script_dir / "fb_single_post.csv"
+                    images_path = script_dir / "fb_images"
+                    messagebox.showinfo(
+                        "Scrape finished",
+                        f"Post scraped successfully.\n\n"
+                        f"CSV saved to:\n{csv_path}\n\n"
+                        f"Images (if any) are in:\n{images_path}",
+                    )
+                except Exception:
+                    pass
+
+            self.after(0, update_ui)
+        except Exception as e:
+            error_message = str(e)
+            self.after(
+                0,
+                lambda msg=error_message: (
+                    self._stop_progress(),
+                    self._set_status("Error during scrape."),
+                    messagebox.showerror("Error", msg),
+                ),
+            )
+
+    def _populate_preview(self):
+        if not self.post_data:
+            return
+
+        url = str(self.post_data.get("post_url", ""))
+        text = str(self.post_data.get("post_text", "") or "")
+        image_paths = str(self.post_data.get("image_paths", "") or "")
+
+        self.url_label.configure(text=url)
+
+        self.text_box.configure(state="normal")
+        self.text_box.delete("1.0", tk.END)
+        self.text_box.insert("1.0", text)
+        self.text_box.configure(state="disabled")
+
+        self.images_box.configure(state="normal")
+        self.images_box.delete("1.0", tk.END)
+        self.images_box.insert("1.0", image_paths)
+        self.images_box.configure(state="disabled")
+
+    def _on_open_output(self):
+        """
+        Open the folder where the script (and CSV/images) live.
+        """
+        script_dir = Path(__file__).resolve().parent
+        folder = script_dir
+
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(folder))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                os.system(f'open "{folder}"')
+            else:
+                os.system(f'xdg-open "{folder}"')
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open folder: {e}")
+
+
 if __name__ == "__main__":
-    main()
+    if tk is not None:
+        app = SinglePostScraperApp()
+        app.mainloop()
+    else:
+        main_cli()
