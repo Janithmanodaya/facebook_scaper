@@ -5,6 +5,7 @@ import re
 import sys
 import time
 import webbrowser
+import html as html_lib
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -20,8 +21,12 @@ SL_PHONE_REGEX = re.compile(r"(?:\+94\d{8,9}|0(?:3|7)\d{7,8})")
 # Facebook often embeds real image URLs inside HTML (e.g. scontent.xx.fbcdn.net)
 # and shows inline SVG icons as <img src="data:...">. We detect the real media URLs
 # via a relaxed regex so that we can download photos reliably.
+# NOTE: Facebook image URLs almost always include a query string with
+# security / cache parameters (e.g. ?_nc_cat=..., ?_nc_eui2=...).
+# If we cut the URL at ".jpg" or ".png", the request will usually fail
+# (HTTP 403 / 404). Therefore the regex keeps the optional query part.
 FB_IMAGE_URL_REGEX = re.compile(
-    r"https?://[^\"'\s]+?\.(?:jpg|jpeg|png|webp)",
+    r"https?://[^\"'\\s]+?\\.(?:jpg|jpeg|png|webp)(?:\\?[^\"'\\s]*)?",
     re.IGNORECASE,
 )
 
@@ -225,10 +230,12 @@ def extract_posts_from_dom(
             pass
 
         # As a fallback, scan the HTML for any direct image URLs (fbcdn, scontent, etc.).
+        # We also unescape HTML entities (&amp; → &) to get a valid URL.
         if html:
             for match in FB_IMAGE_URL_REGEX.findall(html):
-                if match not in image_urls:
-                    image_urls.append(match)
+                clean_url = html_lib.unescape(match)
+                if clean_url not in image_urls:
+                    image_urls.append(clean_url)
 
         posts.append(
             {
