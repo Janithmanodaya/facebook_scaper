@@ -133,6 +133,11 @@ def extract_single_post(
     - post_url
     - post_text
     - image_urls (list)
+
+    We try to:
+    - Prefer the main story_message container with the longest text
+      (to avoid wrapper/share texts).
+    - Only keep large, content images (skip emojis, icons, etc.).
     """
     print(f"[INFO] Opening post URL: {post_url}")
     driver.get(post_url)
@@ -143,13 +148,21 @@ def extract_single_post(
     text = ""
     html = ""
 
-    # Try to find the specific story_message container first
+    # Try to find all story_message containers and pick the one with longest text
+    target = None
     try:
         story_divs = driver.find_elements(
             By.XPATH, "//div[@data-ad-rendering-role='story_message']"
         )
         if story_divs:
-            target = story_divs[0]
+            def _score(el):
+                try:
+                    t = el.text or ""
+                except Exception:
+                    t = ""
+                return len(t)
+
+            target = max(story_divs, key=_score)
         else:
             # Fallback: first article on the page
             target = driver.find_element(By.XPATH, "//div[@role='article']")
@@ -185,6 +198,26 @@ def extract_single_post(
             src = img.get_attribute("src") or ""
             if not src or src.startswith("data:"):
                 continue
+
+            # Skip obvious emojis and small icons
+            if "emoji.php" in src or "static.xx.fbcdn.net/images/emoji" in src:
+                continue
+
+            # Only keep real media from fbcdn/scontent if possible
+            if "scontent" not in src and "fbcdn.net" not in src:
+                continue
+
+            # Filter by rendered size to avoid tiny icons
+            try:
+                w = driver.execute_script("return arguments[0].naturalWidth;", img)
+                h = driver.execute_script("return arguments[0].naturalHeight;", img)
+            except Exception:
+                w, h = 0, 0
+
+            if (w and w < 200) and (h and h < 200):
+                # Very small image; likely an icon
+                continue
+
             if src not in image_urls:
                 image_urls.append(src)
     except Exception:
@@ -199,6 +232,11 @@ def extract_single_post(
     if page_html:
         for match in FB_IMAGE_URL_REGEX.findall(page_html):
             clean_url = html_lib.unescape(match)
+            # Same domain-based filtering as above
+            if "emoji.php" in clean_url or "static.xx.fbcdn.net/images/emoji" in clean_url:
+                continue
+            if "scontent" not in clean_url and "fbcdn.net" not in clean_url:
+                continue
             if clean_url not in image_urls:
                 image_urls.append(clean_url)
 
