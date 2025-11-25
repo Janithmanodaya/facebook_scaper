@@ -132,15 +132,16 @@ def extract_posts_from_dom(
     We try to be robust to Facebook layout changes:
 
     - First, find all elements with role="article" anywhere on the page.
-    - For each article, try several strategies to locate a canonical post link:
-      1. A link containing "/groups/<group_id_or_slug>/posts/" or "/permalink/"
-      2. Any link containing "/groups/" and "/posts/"
-      3. As a final fallback, any link containing "/posts/"
+    - For group pages:
+      * For each article, try several strategies to locate a canonical post link.
+    - For non-group/single-post pages (group_id_or_slug is empty):
+      * We do NOT require a post link; we simply treat each article as a post
+        and use the current page URL as the post_url (the caller can override).
     - We then collect:
       - post_url
       - post_text (visible text of the article)
       - html (innerHTML of the article, used as a fallback for phone detection)
-      - image_urls (all <img> src values within the article)
+      - image_urls (all &lt;img&gt; src values within the article)
     """
     posts: List[Dict[str, str]] = []
 
@@ -153,13 +154,14 @@ def extract_posts_from_dom(
     print(f"[DEBUG] Found {len(articles)} candidate article elements on the page.")
 
     gid = (group_id_or_slug or "").strip()
+    is_group_mode = bool(gid)
 
     for idx, art in enumerate(articles, start=1):
         href = ""
         link_el = None
 
-        # Strategy 1: explicit group id/slug in the URL
-        if gid:
+        if is_group_mode:
+            # Strategy 1: explicit group id/slug in the URL
             try:
                 xpath = (
                     ".//a[contains(@href, '/groups/"
@@ -172,31 +174,42 @@ def extract_posts_from_dom(
             except Exception:
                 link_el = None
 
-        # Strategy 2: generic groups + posts pattern
-        if link_el is None:
-            try:
-                link_el = art.find_element(
-                    By.XPATH,
-                    ".//a[contains(@href, '/groups/') and contains(@href, '/posts/')]",
+            # Strategy 2: generic groups + posts pattern
+            if link_el is None:
+                try:
+                    link_el = art.find_element(
+                        By.XPATH,
+                        ".//a[contains(@href, '/groups/') and contains(@href, '/posts/')]",
+                    )
+                except Exception:
+                    link_el = None
+
+            # Strategy 3: any link with "/posts/"
+            if link_el is None:
+                try:
+                    link_el = art.find_element(
+                        By.XPATH, ".//a[contains(@href, '/posts/')]"
+                    )
+                except Exception:
+                    link_el = None
+
+            if link_el is None:
+                snippet = (art.text or "").replace("\n", " ")[:80]
+                print(
+                    f"[DEBUG] Article #{idx}: no post link found. Snippet='{snippet}'"
                 )
-            except Exception:
-                link_el = None
+                continue
 
-        # Strategy 3: any link with "/posts/"
-        if link_el is None:
+            href = link_el.get_attribute("href") or ""
+            if not href:
+                continue
+        else:
+            # Non-group/single-post mode: don't require a post link;
+            # use the current URL as a placeholder (caller may override).
             try:
-                link_el = art.find_element(By.XPATH, ".//a[contains(@href, '/posts/')]")
+                href = driver.current_url or ""
             except Exception:
-                link_el = None
-
-        if link_el is None:
-            snippet = (art.text or "").replace("\n", " ")[:80]
-            print(f"[DEBUG] Article #{idx}: no post link found. Snippet='{snippet}'")
-            continue
-
-        href = link_el.get_attribute("href") or ""
-        if not href:
-            continue
+                href = ""
 
         text = art.text or ""
         html = ""
