@@ -140,7 +140,7 @@ def extract_posts_from_dom(
       - post_url
       - post_text (visible text of the article)
       - html (innerHTML of the article, used as a fallback for phone detection)
-      - image_urls (all <img> src values within the article)
+      - image_urls (all <img> src values within the article, plus fbcdn URLs in HTML)
     """
     posts: List[Dict[str, str]] = []
 
@@ -216,11 +216,12 @@ def extract_posts_from_dom(
 
         image_urls: List[str] = []
         try:
-            # 1) Regula <=img> tags
+            # 1) Regular <img> tags
             img_elements = art.find_elements(By.XPATH, ".//img")
             for img in img_elements:
                 src = img.get_attribute("src") or ""
-               tinue
+                if not src:
+                    continue
                 if src.startswith("data:"):
                     # Skip inline SVG/icons here; we'll look for real media URLs below.
                     continue
@@ -236,6 +237,13 @@ def extract_posts_from_dom(
                 clean_url = html_lib.unescape(match)
                 if clean_url not in image_urls:
                     image_urls.append(clean_url)
+
+        if not image_urls:
+            snippet = (text or "").replace("\n", " ")[:80]
+            print(
+                f"[DEBUG] Article #{idx}: no image URLs found. "
+                f"text_snippet='{snippet}', html_len={len(html)}"
+            )
 
         posts.append(
             {
@@ -295,7 +303,7 @@ def download_images_for_posts(
     img_dir = script_dir / "fb_images"
     img_dir.mkdir(exist_ok=True)
 
-    headers_base = {}
+    headers_base: Dict[str, str] = {}
     if cookies:
         cookie_header = build_cookie_header(cookies)
         if cookie_header:
@@ -308,7 +316,10 @@ def download_images_for_posts(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     )
-    headers_base.setdefault("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+    headers_base.setdefault(
+        "Accept",
+        "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    )
     headers_base.setdefault("Accept-Language", "en-US,en;q=0.9")
     headers_base.setdefault("Connection", "keep-alive")
 
@@ -316,12 +327,16 @@ def download_images_for_posts(
         image_urls = post.get("image_urls") or []
         local_paths: List[str] = []
 
+        post_url = post.get("post_url", "") or "https://www.facebook.com/"
+
         if not image_urls:
             print(
                 f"[DEBUG] Post #{i} ({post.get('post_url','')}) has no image URLs "
                 f"to download."
             )
-            post["image_paths"]//www.facebook.com/"
+            post["image_paths"] = ""
+            continue
+
         headers = dict(headers_base)
         headers["Referer"] = post_url
 
@@ -338,7 +353,18 @@ def download_images_for_posts(
                         f"HTTP {resp.status_code}"
                     )
                     continue
+
+                # Guess extension from URL/content-type; default to .jpg
                 ext = ".jpg"
+                # Simple content-type based check
+                content_type = resp.headers.get("Content-Type", "").lower()
+                if "png" in content_type:
+                    ext = ".png"
+                elif "webp" in content_type:
+                    ext = ".webp"
+                elif "jpeg" in content_type or "jpg" in content_type:
+                    ext = ".jpg"
+
                 filename = img_dir / f"post_{i}_img{j}{ext}"
                 with filename.open("wb") as f:
                     f.write(resp.content)
@@ -346,6 +372,7 @@ def download_images_for_posts(
             except Exception as e:
                 print(f"[DEBUG] Exception downloading image {url}: {e}")
                 continue
+
         post["image_paths"] = ";".join(local_paths)
 
 
